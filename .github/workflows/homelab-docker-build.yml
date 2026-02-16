@@ -41,7 +41,7 @@ jobs:
             ghcr.io/kevingatera/readarr:homelab
             ghcr.io/kevingatera/readarr:homelab-${{ github.sha }}
           build-args: |
-            VERSION=homelab
+            VERSION=0.9.0.1
             VENDOR=kevingatera
             BRANCH=homelab
           labels: |
