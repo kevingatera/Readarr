@@ -298,10 +298,10 @@ namespace NzbDrone.Core.Books
                     FROM ""SeriesBookLink"" sbl
                     LEFT JOIN ""Series"" s ON sbl.""SeriesId"" = s.""Id""
                     INNER JOIN (
-                        SELECT ""BookId"", MIN(""Id"") as MinId
+                        SELECT ""BookId"", MIN(""Id"") as minid
                         FROM ""SeriesBookLink""
                         GROUP BY ""BookId""
-                    ) first_series ON sbl.""BookId"" = first_series.""BookId"" AND sbl.""Id"" = first_series.""MinId""
+                    ) first_series ON sbl.""BookId"" = first_series.""BookId"" AND sbl.""Id"" = first_series.minid
                 ) sbl ON b.""Id"" = sbl.""BookId""
                 ORDER BY b.""Id""";
             return _database.RawQuery<BookWithRelatedData>(sql).ToList();
