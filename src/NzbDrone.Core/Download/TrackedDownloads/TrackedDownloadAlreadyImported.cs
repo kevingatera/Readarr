@@ -37,7 +37,10 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
             var allBooksImportedInHistory = trackedDownload.RemoteBook.Books.All(book =>
             {
-                var lastHistoryItem = historyItems.FirstOrDefault(h => h.BookId == book.Id);
+                var lastHistoryItem = historyItems
+                    .Where(h => h.BookId == book.Id)
+                    .OrderByDescending(h => h.Date)
+                    .FirstOrDefault();
 
                 if (lastHistoryItem == null)
                 {
