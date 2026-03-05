@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using NLog;
@@ -409,7 +410,9 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             {
                 localEdition.LocalBooks.MostCommon(x => x.FileTrackInfo.BookTitle),
                 localEdition.LocalBooks.MostCommon(x => x.FolderTrackInfo?.BookTitle),
-                localEdition.LocalBooks.MostCommon(x => x.DownloadClientBookInfo?.BookTitle)
+                localEdition.LocalBooks.MostCommon(x => x.DownloadClientBookInfo?.BookTitle),
+                localEdition.LocalBooks.MostCommon(x => Path.GetFileNameWithoutExtension(x.Path)),
+                localEdition.LocalBooks.MostCommon(x => Path.GetFileName(Path.GetDirectoryName(x.Path) ?? string.Empty))
             };
 
             return bookTags
@@ -438,6 +441,13 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             }
 
             Add(bookTag);
+
+            var parsed = Parser.Parser.ParseBookTitle(bookTag);
+            if (parsed?.BookTitle.IsNotNullOrWhiteSpace() ?? false)
+            {
+                Add(parsed.BookTitle);
+            }
+
             Add(bookTag.CleanBookTitle());
             Add(bookTag.RemoveBracketsAndContents());
             Add(bookTag.RemoveAfterDash());

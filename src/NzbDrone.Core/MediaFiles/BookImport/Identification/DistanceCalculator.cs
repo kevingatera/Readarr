@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -190,6 +191,12 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             authors.AddRange(fileAuthors.Where(a => a.IsNotNullOrWhiteSpace()));
             authors.AddRange(localTracks.Select(x => x.FolderTrackInfo?.AuthorName).Where(x => x.IsNotNullOrWhiteSpace()));
             authors.AddRange(localTracks.Select(x => x.DownloadClientBookInfo?.AuthorName).Where(x => x.IsNotNullOrWhiteSpace()));
+            authors.AddRange(localTracks
+                .Select(x => Parser.Parser.ParseBookTitle(Path.GetFileNameWithoutExtension(x.Path))?.AuthorName)
+                .Where(x => x.IsNotNullOrWhiteSpace()));
+            authors.AddRange(localTracks
+                .Select(x => Parser.Parser.ParseBookTitle(Path.GetFileName(Path.GetDirectoryName(x.Path) ?? string.Empty))?.AuthorName)
+                .Where(x => x.IsNotNullOrWhiteSpace()));
 
             return GetAuthorVariants(authors
                     .Distinct(StringComparer.InvariantCultureIgnoreCase)
@@ -205,7 +212,9 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             {
                 localTracks.MostCommon(x => x.FileTrackInfo.BookTitle),
                 localTracks.MostCommon(x => x.FolderTrackInfo?.BookTitle),
-                localTracks.MostCommon(x => x.DownloadClientBookInfo?.BookTitle)
+                localTracks.MostCommon(x => x.DownloadClientBookInfo?.BookTitle),
+                localTracks.MostCommon(x => Path.GetFileNameWithoutExtension(x.Path)),
+                localTracks.MostCommon(x => Path.GetFileName(Path.GetDirectoryName(x.Path) ?? string.Empty))
             };
 
             return rawTitles
@@ -238,6 +247,12 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             }
 
             Add(title);
+
+            var parsed = Parser.Parser.ParseBookTitle(title);
+            if (parsed?.BookTitle.IsNotNullOrWhiteSpace() ?? false)
+            {
+                Add(parsed.BookTitle);
+            }
 
             var cleanedTitle = CleanTitleCruft.Replace(title);
             Add(cleanedTitle);
