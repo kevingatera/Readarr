@@ -341,7 +341,7 @@ class QueueRow extends Component {
                           />
                         }
                         title={translate('ManualDownload')}
-                        body="This release failed parsing checks and was manually downloaded from an interactive search.  Import is likely to fail."
+                        body="This release was manually downloaded from interactive search. If automatic import fails, use Interactive Import to map it to the correct book."
                         position={tooltipPositions.LEFT}
                       />
                   }
