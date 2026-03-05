@@ -6,9 +6,11 @@ using System.Linq;
 using NLog;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.EnvironmentInfo;
+using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Books;
 using NzbDrone.Core.DecisionEngine;
 using NzbDrone.Core.Download;
+using NzbDrone.Core.History;
 using NzbDrone.Core.MediaFiles.BookImport;
 using NzbDrone.Core.MediaFiles.Events;
 using NzbDrone.Core.Messaging.Events;
@@ -29,9 +31,11 @@ namespace NzbDrone.Core.MediaFiles
         private readonly IDiskProvider _diskProvider;
         private readonly IDiskScanService _diskScanService;
         private readonly IAuthorService _authorService;
+        private readonly IBookService _bookService;
         private readonly IParsingService _parsingService;
         private readonly IMakeImportDecision _importDecisionMaker;
         private readonly IImportApprovedBooks _importApprovedTracks;
+        private readonly IHistoryService _historyService;
         private readonly IEventAggregator _eventAggregator;
         private readonly IRuntimeInfo _runtimeInfo;
         private readonly Logger _logger;
@@ -39,9 +43,11 @@ namespace NzbDrone.Core.MediaFiles
         public DownloadedBooksImportService(IDiskProvider diskProvider,
                                              IDiskScanService diskScanService,
                                              IAuthorService authorService,
+                                             IBookService bookService,
                                              IParsingService parsingService,
                                              IMakeImportDecision importDecisionMaker,
                                              IImportApprovedBooks importApprovedTracks,
+                                             IHistoryService historyService,
                                              IEventAggregator eventAggregator,
                                              IRuntimeInfo runtimeInfo,
                                              Logger logger)
@@ -49,9 +55,11 @@ namespace NzbDrone.Core.MediaFiles
             _diskProvider = diskProvider;
             _diskScanService = diskScanService;
             _authorService = authorService;
+            _bookService = bookService;
             _parsingService = parsingService;
             _importDecisionMaker = importDecisionMaker;
             _importApprovedTracks = importApprovedTracks;
+            _historyService = historyService;
             _eventAggregator = eventAggregator;
             _runtimeInfo = runtimeInfo;
             _logger = logger;
@@ -211,6 +219,15 @@ namespace NzbDrone.Core.MediaFiles
             {
                 Author = author
             };
+
+            var historyBookOverride = GetHistoryBookOverride(downloadClientItem);
+
+            if (historyBookOverride != null)
+            {
+                idOverrides.Book = historyBookOverride;
+                idOverrides.Author = historyBookOverride.Author?.Value ?? author;
+            }
+
             var idInfo = new ImportDecisionMakerInfo
             {
                 DownloadClientItem = downloadClientItem,
@@ -296,6 +313,15 @@ namespace NzbDrone.Core.MediaFiles
             {
                 Author = author
             };
+
+            var historyBookOverride = GetHistoryBookOverride(downloadClientItem);
+
+            if (historyBookOverride != null)
+            {
+                idOverrides.Book = historyBookOverride;
+                idOverrides.Author = historyBookOverride.Author?.Value ?? author;
+            }
+
             var idInfo = new ImportDecisionMakerInfo
             {
                 DownloadClientItem = downloadClientItem
@@ -320,6 +346,35 @@ namespace NzbDrone.Core.MediaFiles
                            .Replace("_FAILED_", "");
 
             return folder;
+        }
+
+        private Book GetHistoryBookOverride(DownloadClientItem downloadClientItem)
+        {
+            if (downloadClientItem == null || downloadClientItem.DownloadId.IsNullOrWhiteSpace())
+            {
+                return null;
+            }
+
+            var grabbedBookIds = _historyService.Find(downloadClientItem.DownloadId, EntityHistoryEventType.Grabbed)
+                .Select(h => h.BookId)
+                .Where(id => id > 0)
+                .Distinct()
+                .ToList();
+
+            if (grabbedBookIds.Count != 1)
+            {
+                return null;
+            }
+
+            try
+            {
+                return _bookService.GetBook(grabbedBookIds[0]);
+            }
+            catch (Exception e)
+            {
+                _logger.Debug(e, "Unable to load history book override for downloadId={0}", downloadClientItem.DownloadId);
+                return null;
+            }
         }
 
         private ImportResult FileIsLockedResult(string audioFile)
