@@ -5,7 +5,6 @@ using NLog;
 using NzbDrone.Common.Cache;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Serializer;
-using NzbDrone.Core.Books;
 using NzbDrone.Core.Books.Events;
 using NzbDrone.Core.CustomFormats;
 using NzbDrone.Core.Download.History;
@@ -154,7 +153,9 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                 if (historyItems.Any())
                 {
                     var firstHistoryItem = historyItems.First();
-                    var grabbedEvent = historyItems.FirstOrDefault(v => v.EventType == EntityHistoryEventType.Grabbed);
+                    var grabbedHistoryItems = historyItems.Where(v => v.EventType == EntityHistoryEventType.Grabbed).ToList();
+                    var grabbedEvent = grabbedHistoryItems.FirstOrDefault();
+                    var fallbackHistoryItem = grabbedEvent ?? firstHistoryItem;
 
                     trackedDownload.Indexer = grabbedEvent?.Data?.GetValueOrDefault("indexer");
 
@@ -162,32 +163,44 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                         trackedDownload.RemoteBook?.Author == null ||
                         trackedDownload.RemoteBook.Books.Empty())
                     {
-                        // Try parsing the original source title and if that fails, try parsing it as a special
-                        var historyAuthor = firstHistoryItem.Author;
-                        var historyBooks = new List<Book> { firstHistoryItem.Book };
+                        // Try parsing the grabbed source title first and if that fails, try parsing with search criteria.
+                        var historyAuthor = fallbackHistoryItem.Author;
+                        var historyBooks = grabbedHistoryItems
+                            .Select(v => v.Book)
+                            .Where(v => v != null)
+                            .DistinctBy(v => v.Id)
+                            .ToList();
 
-                        parsedBookInfo = Parser.Parser.ParseBookTitle(firstHistoryItem.SourceTitle);
+                        if (historyBooks.Empty() && firstHistoryItem.Book != null)
+                        {
+                            historyBooks.Add(firstHistoryItem.Book);
+                        }
+
+                        var historyAuthorId = fallbackHistoryItem.AuthorId;
+                        var grabbedBookIds = grabbedHistoryItems
+                            .Select(h => h.BookId)
+                            .Distinct();
+
+                        parsedBookInfo = Parser.Parser.ParseBookTitle(fallbackHistoryItem.SourceTitle);
 
                         if (parsedBookInfo != null)
                         {
                             trackedDownload.RemoteBook = _parsingService.Map(parsedBookInfo,
-                                firstHistoryItem.AuthorId,
-                                historyItems.Where(v => v.EventType == EntityHistoryEventType.Grabbed).Select(h => h.BookId)
-                                    .Distinct());
+                                historyAuthorId,
+                                grabbedBookIds);
                         }
                         else
                         {
                             parsedBookInfo =
-                                Parser.Parser.ParseBookTitleWithSearchCriteria(firstHistoryItem.SourceTitle,
+                                Parser.Parser.ParseBookTitleWithSearchCriteria(fallbackHistoryItem.SourceTitle,
                                     historyAuthor,
                                     historyBooks);
 
                             if (parsedBookInfo != null)
                             {
                                 trackedDownload.RemoteBook = _parsingService.Map(parsedBookInfo,
-                                    firstHistoryItem.AuthorId,
-                                    historyItems.Where(v => v.EventType == EntityHistoryEventType.Grabbed).Select(h => h.BookId)
-                                        .Distinct());
+                                    historyAuthorId,
+                                    grabbedBookIds);
                             }
                         }
                     }
