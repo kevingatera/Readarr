@@ -1,7 +1,10 @@
 using System.Collections.Generic;
 using FluentAssertions;
 using NUnit.Framework;
+using NzbDrone.Core.Books;
+using NzbDrone.Core.Datastore;
 using NzbDrone.Core.MediaFiles.BookImport.Identification;
+using NzbDrone.Core.Parser.Model;
 using NzbDrone.Test.Common;
 
 namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
@@ -90,6 +93,49 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
             authors.Should().HaveCount(2);
             authors.Should().Contain("First Last");
             authors.Should().Contain("Second Third, Fourth Fifth");
+        }
+
+        [Test]
+        public void should_match_series_part_aliases_against_series_position()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };
+
+            var book = new Book
+            {
+                Title = "Message for the Dead",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata),
+                SeriesLinks = new LazyLoaded<List<SeriesBookLink>>(new List<SeriesBookLink>
+                {
+                    new SeriesBookLink
+                    {
+                        Position = "4",
+                        Series = new LazyLoaded<Series>(new Series { Title = "Galaxy's Edge" })
+                    }
+                })
+            };
+
+            var edition = new Edition
+            {
+                Title = "Message for the Dead",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/Galaxy's Edge, Part IV.m4b",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Authors = new List<string> { "Jason Anspach" },
+                        BookTitle = "Galaxy's Edge, Part IV"
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().NotContain("book");
         }
     }
 }

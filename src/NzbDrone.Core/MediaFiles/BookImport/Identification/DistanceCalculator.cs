@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using NLog;
 using NzbDrone.Common.Extensions;
@@ -32,19 +34,11 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
         {
             var dist = new Distance();
 
-            // the most common list of authors reported by a file
-            var fileAuthors = localTracks.Select(x => x.FileTrackInfo.Authors.Where(a => a.IsNotNullOrWhiteSpace()).ToList())
-                .GroupBy(x => x.ConcatToString())
-                .OrderByDescending(x => x.Count())
-                .First()
-                .First();
-
-            var authors = GetAuthorVariants(fileAuthors);
+            var authors = GetAuthorCandidates(localTracks);
 
             dist.AddString("author", authors, edition.Book.Value.AuthorMetadata.Value.Name);
             Logger.Trace("author: '{0}' vs '{1}'; {2}", authors.ConcatToString("' or '"), edition.Book.Value.AuthorMetadata.Value.Name, dist.NormalizedDistance());
 
-            var title = localTracks.MostCommon(x => x.FileTrackInfo.BookTitle) ?? "";
             var titleOptions = new List<string> { edition.Title };
             if (titleOptions[0].Contains('#', StringComparison.OrdinalIgnoreCase))
             {
@@ -63,6 +57,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                         titleOptions.Add($"{l.Series.Value.Title} Book {l.Position} {edition.Title}");
                         titleOptions.Add($"{edition.Title} {l.Series.Value.Title} {l.Position}");
                         titleOptions.Add($"{edition.Title} {l.Series.Value.Title} Book {l.Position}");
+                        AddSeriesPartTitleOptions(titleOptions, l.Series.Value.Title, l.Position);
                     }
                 }
             }
@@ -74,17 +69,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                 titleOptions.Add(maintitle);
             }
 
-            var cleanedTitle = CleanTitleCruft.Replace(title);
-            var fileTitles = new[]
-            {
-                title,
-                cleanedTitle,
-                LeadingPartNumber.Replace(title),
-                LeadingPartNumber.Replace(cleanedTitle)
-            }
-                .Where(x => x.IsNotNullOrWhiteSpace())
-                .Distinct()
-                .ToList();
+            var fileTitles = GetTitleCandidates(localTracks);
 
             dist.AddString("book", fileTitles, titleOptions);
             Logger.Trace("book: '{0}' vs '{1}'; {2}", fileTitles.ConcatToString("' or '"), titleOptions.ConcatToString("' or '"), dist.NormalizedDistance());
@@ -189,6 +174,227 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             }
 
             return dist;
+        }
+
+        private static List<string> GetAuthorCandidates(List<LocalBook> localTracks)
+        {
+            var authors = new List<string>();
+
+            // the most common list of authors reported by a file
+            var fileAuthors = localTracks.Select(x => x.FileTrackInfo.Authors?.Where(a => a.IsNotNullOrWhiteSpace()).ToList() ?? new List<string>())
+                .GroupBy(x => x.ConcatToString())
+                .OrderByDescending(x => x.Count())
+                .First()
+                .First();
+
+            authors.AddRange(fileAuthors.Where(a => a.IsNotNullOrWhiteSpace()));
+            authors.AddRange(localTracks.Select(x => x.FolderTrackInfo?.AuthorName).Where(x => x.IsNotNullOrWhiteSpace()));
+            authors.AddRange(localTracks.Select(x => x.DownloadClientBookInfo?.AuthorName).Where(x => x.IsNotNullOrWhiteSpace()));
+
+            return GetAuthorVariants(authors
+                    .Distinct(StringComparer.InvariantCultureIgnoreCase)
+                    .ToList())
+                .Where(x => x.IsNotNullOrWhiteSpace())
+                .Distinct(StringComparer.InvariantCultureIgnoreCase)
+                .ToList();
+        }
+
+        private static List<string> GetTitleCandidates(List<LocalBook> localTracks)
+        {
+            var rawTitles = new List<string>
+            {
+                localTracks.MostCommon(x => x.FileTrackInfo.BookTitle),
+                localTracks.MostCommon(x => x.FolderTrackInfo?.BookTitle),
+                localTracks.MostCommon(x => x.DownloadClientBookInfo?.BookTitle)
+            };
+
+            return rawTitles
+                .Where(x => x.IsNotNullOrWhiteSpace())
+                .SelectMany(ExpandTitleCandidates)
+                .Where(x => x.IsNotNullOrWhiteSpace())
+                .Distinct(StringComparer.InvariantCultureIgnoreCase)
+                .ToList();
+        }
+
+        private static IEnumerable<string> ExpandTitleCandidates(string title)
+        {
+            if (title.IsNullOrWhiteSpace())
+            {
+                return Array.Empty<string>();
+            }
+
+            var candidates = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+
+            void Add(string value)
+            {
+                if (value.IsNotNullOrWhiteSpace())
+                {
+                    var trimmed = value.Trim(' ', '-', '_', '.', ',', ':', ';');
+                    if (trimmed.IsNotNullOrWhiteSpace())
+                    {
+                        candidates.Add(trimmed);
+                    }
+                }
+            }
+
+            Add(title);
+
+            var cleanedTitle = CleanTitleCruft.Replace(title);
+            Add(cleanedTitle);
+            Add(LeadingPartNumber.Replace(title));
+            Add(LeadingPartNumber.Replace(cleanedTitle));
+            Add(title.RemoveBracketsAndContents());
+            Add(title.RemoveAfterDash());
+
+            if (title.Contains(" - ", StringComparison.Ordinal))
+            {
+                var splitIndex = title.LastIndexOf(" - ", StringComparison.Ordinal);
+                Add(title.Substring(0, splitIndex));
+                Add(title.Substring(splitIndex + 3));
+            }
+
+            return candidates;
+        }
+
+        private static void AddSeriesPartTitleOptions(List<string> titleOptions, string seriesName, string position)
+        {
+            if (seriesName.IsNullOrWhiteSpace() || position.IsNullOrWhiteSpace())
+            {
+                return;
+            }
+
+            AddTitleOption(titleOptions, $"{seriesName} Part {position}");
+
+            if (TryParseSeriesNumber(position, out var numericPosition))
+            {
+                AddTitleOption(titleOptions, $"{seriesName} Part {numericPosition.ToString("0.###", CultureInfo.InvariantCulture)}");
+
+                if (Math.Abs(numericPosition - Math.Round(numericPosition)) < 0.001)
+                {
+                    var rounded = (int)Math.Round(numericPosition);
+                    AddTitleOption(titleOptions, $"{seriesName} Part {ToRoman(rounded)}");
+                }
+            }
+        }
+
+        private static void AddTitleOption(List<string> titleOptions, string option)
+        {
+            if (option.IsNullOrWhiteSpace())
+            {
+                return;
+            }
+
+            if (!titleOptions.Any(x => x.Equals(option, StringComparison.InvariantCultureIgnoreCase)))
+            {
+                titleOptions.Add(option);
+            }
+        }
+
+        private static bool TryParseSeriesNumber(string value, out double number)
+        {
+            number = 0;
+
+            if (value.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            if (double.TryParse(value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out number))
+            {
+                return true;
+            }
+
+            var roman = RomanToInt(value);
+            if (roman > 0)
+            {
+                number = roman;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static int RomanToInt(string value)
+        {
+            if (value.IsNullOrWhiteSpace())
+            {
+                return 0;
+            }
+
+            var roman = value.ToUpperInvariant();
+            var total = 0;
+            var last = 0;
+
+            for (var i = roman.Length - 1; i >= 0; i--)
+            {
+                var current = roman[i] switch
+                {
+                    'I' => 1,
+                    'V' => 5,
+                    'X' => 10,
+                    'L' => 50,
+                    'C' => 100,
+                    'D' => 500,
+                    'M' => 1000,
+                    _ => 0
+                };
+
+                if (current == 0)
+                {
+                    return 0;
+                }
+
+                if (current < last)
+                {
+                    total -= current;
+                }
+                else
+                {
+                    total += current;
+                    last = current;
+                }
+            }
+
+            return total;
+        }
+
+        private static string ToRoman(int value)
+        {
+            if (value <= 0)
+            {
+                return string.Empty;
+            }
+
+            var numerals = new (int Value, string Symbol)[]
+            {
+                (1000, "M"),
+                (900, "CM"),
+                (500, "D"),
+                (400, "CD"),
+                (100, "C"),
+                (90, "XC"),
+                (50, "L"),
+                (40, "XL"),
+                (10, "X"),
+                (9, "IX"),
+                (5, "V"),
+                (4, "IV"),
+                (1, "I")
+            };
+
+            var output = new StringBuilder();
+            var remaining = value;
+
+            foreach (var numeral in numerals)
+            {
+                while (remaining >= numeral.Value)
+                {
+                    output.Append(numeral.Symbol);
+                    remaining -= numeral.Value;
+                }
+            }
+
+            return output.ToString();
         }
 
         public static List<string> GetAuthorVariants(List<string> fileAuthors)

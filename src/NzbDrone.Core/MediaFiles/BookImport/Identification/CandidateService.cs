@@ -1,10 +1,14 @@
+using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
+using System.Text.RegularExpressions;
 using NLog;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Books;
 using NzbDrone.Core.MetadataSource;
 using NzbDrone.Core.MetadataSource.Goodreads;
+using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
 
 namespace NzbDrone.Core.MediaFiles.BookImport.Identification
@@ -17,6 +21,11 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
 
     public class CandidateService : ICandidateService
     {
+        private static readonly Regex SeriesPartRegex = new Regex(@"\b(?:book|part|pt)\s*(?<number>\d+(?:\.\d+)?|[ivxlcdm]+)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex LeadingPartRegex = new Regex(@"^\s*(?:(?:book|part|pt|chapter|disc|cd|track)\s*)?(?<number>\d+(?:\.\d+)?|[ivxlcdm]+)\s*[-._:)]*\s+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex RemoveSeriesPartRegex = new Regex(@"\b(?:book|part|pt)\s*(?:\d+(?:\.\d+)?|[ivxlcdm]+)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex CollapseWhitespaceRegex = new Regex(@"\s{2,}", RegexOptions.Compiled);
+
         private readonly ISearchForNewBook _bookSearchService;
         private readonly IAuthorService _authorService;
         private readonly IBookService _bookService;
@@ -138,8 +147,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             _logger.Trace("Getting candidates for {0}", author);
             var candidateReleases = new List<CandidateEdition>();
 
-            var bookTag = localEdition.LocalBooks.MostCommon(x => x.FileTrackInfo.BookTitle) ?? "";
-            if (bookTag.IsNotNullOrWhiteSpace())
+            var bookTags = GetBookTags(localEdition);
+            foreach (var bookTag in bookTags)
             {
                 var possibleBooks = _bookService.GetCandidates(author.AuthorMetadataId, bookTag);
                 foreach (var book in possibleBooks)
@@ -151,7 +160,9 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                 candidateReleases.AddRange(GetDbCandidatesByEdition(possibleEditions, includeExisting));
             }
 
-            return candidateReleases;
+            candidateReleases.AddRange(GetSeriesPartCandidates(author, bookTags, includeExisting));
+
+            return candidateReleases.DistinctBy(x => x.Edition.Id).ToList();
         }
 
         private List<CandidateEdition> GetDbCandidates(LocalEdition localEdition, bool includeExisting)
@@ -170,10 +181,15 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                 }
             }
 
-            var authorTags = localEdition.LocalBooks.MostCommon(x => x.FileTrackInfo.Authors) ?? new List<string>();
+            var authorTags = GetAuthorTags(localEdition);
             if (authorTags.Any())
             {
-                var variants = DistanceCalculator.GetAuthorVariants(authorTags.Where(x => x.IsNotNullOrWhiteSpace()).ToList());
+                var variants = authorTags
+                    .SelectMany(x => DistanceCalculator.GetAuthorVariants(new List<string> { x }))
+                    .Concat(authorTags)
+                    .Where(x => x.IsNotNullOrWhiteSpace())
+                    .Distinct(StringComparer.InvariantCultureIgnoreCase)
+                    .ToList();
 
                 foreach (var authorTag in variants)
                 {
@@ -289,39 +305,36 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             }
             else
             {
-                // the most common list of authors reported by a file
-                var authors = localEdition.LocalBooks.Select(x => x.FileTrackInfo.Authors.Where(a => a.IsNotNullOrWhiteSpace()).ToList())
-                    .GroupBy(x => x.ConcatToString())
-                    .OrderByDescending(x => x.Count())
-                    .First()
-                    .First();
-                authorTags.AddRange(authors);
+                authorTags.AddRange(GetAuthorTags(localEdition));
             }
 
-            var bookTag = localEdition.LocalBooks.MostCommon(x => x.FileTrackInfo.BookTitle) ?? "";
+            var bookTags = GetBookTags(localEdition);
 
             // If no valid author or book tags, stop
-            if (!authorTags.Any() || bookTag.IsNullOrWhiteSpace())
+            if (!authorTags.Any() || !bookTags.Any())
             {
                 yield break;
             }
 
             // Search by author+book
-            foreach (var authorTag in authorTags)
+            foreach (var authorTag in authorTags.Take(5))
             {
-                try
+                foreach (var bookTag in bookTags.Take(5))
                 {
-                    remoteBooks = _bookSearchService.SearchForNewBook(bookTag, authorTag);
-                }
-                catch (GoodreadsException e)
-                {
-                    _logger.Info(e, "Skipping author/title search due to Goodreads Error");
-                    remoteBooks = new List<Book>();
-                }
+                    try
+                    {
+                        remoteBooks = _bookSearchService.SearchForNewBook(bookTag, authorTag);
+                    }
+                    catch (GoodreadsException e)
+                    {
+                        _logger.Info(e, "Skipping author/title search due to Goodreads Error");
+                        remoteBooks = new List<Book>();
+                    }
 
-                foreach (var candidate in ToCandidates(remoteBooks, seenCandidates, idOverrides))
-                {
-                    yield return candidate;
+                    foreach (var candidate in ToCandidates(remoteBooks, seenCandidates, idOverrides))
+                    {
+                        yield return candidate;
+                    }
                 }
             }
 
@@ -332,23 +345,26 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             }
 
             // Search by just book title
-            try
+            foreach (var bookTag in bookTags.Take(5))
             {
-                remoteBooks = _bookSearchService.SearchForNewBook(bookTag, null);
-            }
-            catch (GoodreadsException e)
-            {
-                _logger.Info(e, "Skipping book title search due to Goodreads Error");
-                remoteBooks = new List<Book>();
-            }
+                try
+                {
+                    remoteBooks = _bookSearchService.SearchForNewBook(bookTag, null);
+                }
+                catch (GoodreadsException e)
+                {
+                    _logger.Info(e, "Skipping book title search due to Goodreads Error");
+                    remoteBooks = new List<Book>();
+                }
 
-            foreach (var candidate in ToCandidates(remoteBooks, seenCandidates, idOverrides))
-            {
-                yield return candidate;
+                foreach (var candidate in ToCandidates(remoteBooks, seenCandidates, idOverrides))
+                {
+                    yield return candidate;
+                }
             }
 
             // Search by just author
-            foreach (var a in authorTags)
+            foreach (var a in authorTags.Take(5))
             {
                 try
                 {
@@ -365,6 +381,251 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                     yield return candidate;
                 }
             }
+        }
+
+        private static List<string> GetAuthorTags(LocalEdition localEdition)
+        {
+            var authorTags = new List<string>();
+
+            var fileAuthors = localEdition.LocalBooks.MostCommon(x => x.FileTrackInfo.Authors) ?? new List<string>();
+            authorTags.AddRange(fileAuthors.Where(x => x.IsNotNullOrWhiteSpace()));
+
+            authorTags.AddRange(localEdition.LocalBooks
+                .Select(x => x.FolderTrackInfo?.AuthorName)
+                .Where(x => x.IsNotNullOrWhiteSpace()));
+
+            authorTags.AddRange(localEdition.LocalBooks
+                .Select(x => x.DownloadClientBookInfo?.AuthorName)
+                .Where(x => x.IsNotNullOrWhiteSpace()));
+
+            return authorTags
+                .Distinct(StringComparer.InvariantCultureIgnoreCase)
+                .ToList();
+        }
+
+        private static List<string> GetBookTags(LocalEdition localEdition)
+        {
+            var bookTags = new List<string>
+            {
+                localEdition.LocalBooks.MostCommon(x => x.FileTrackInfo.BookTitle),
+                localEdition.LocalBooks.MostCommon(x => x.FolderTrackInfo?.BookTitle),
+                localEdition.LocalBooks.MostCommon(x => x.DownloadClientBookInfo?.BookTitle)
+            };
+
+            return bookTags
+                .SelectMany(ExpandBookTagVariants)
+                .Where(x => x.IsNotNullOrWhiteSpace())
+                .Distinct(StringComparer.InvariantCultureIgnoreCase)
+                .ToList();
+        }
+
+        private static IEnumerable<string> ExpandBookTagVariants(string bookTag)
+        {
+            if (bookTag.IsNullOrWhiteSpace())
+            {
+                return Array.Empty<string>();
+            }
+
+            var variants = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+
+            void Add(string value)
+            {
+                var cleaned = CleanTag(value);
+                if (cleaned.IsNotNullOrWhiteSpace())
+                {
+                    variants.Add(cleaned);
+                }
+            }
+
+            Add(bookTag);
+            Add(bookTag.CleanBookTitle());
+            Add(bookTag.RemoveBracketsAndContents());
+            Add(bookTag.RemoveAfterDash());
+            Add(LeadingPartRegex.Replace(bookTag, string.Empty));
+            Add(RemoveSeriesPartRegex.Replace(bookTag, " "));
+
+            if (bookTag.Contains(" - ", StringComparison.Ordinal))
+            {
+                var splitIndex = bookTag.LastIndexOf(" - ", StringComparison.Ordinal);
+                Add(bookTag.Substring(0, splitIndex));
+                Add(bookTag.Substring(splitIndex + 3));
+            }
+
+            if (bookTag.Contains(':'))
+            {
+                var split = bookTag.Split(':', 2);
+                Add(split[0]);
+                Add(split[1]);
+            }
+
+            return variants;
+        }
+
+        private static string CleanTag(string value)
+        {
+            if (value.IsNullOrWhiteSpace())
+            {
+                return string.Empty;
+            }
+
+            var cleaned = value.Replace('_', ' ').Trim(' ', '-', '_', '.', ',', ':', ';');
+            cleaned = CollapseWhitespaceRegex.Replace(cleaned, " ");
+
+            return cleaned.Trim();
+        }
+
+        private List<CandidateEdition> GetSeriesPartCandidates(Author author, IEnumerable<string> bookTags, bool includeExisting)
+        {
+            if (author == null)
+            {
+                return new List<CandidateEdition>();
+            }
+
+            var partNumbers = ParsePartNumbers(bookTags);
+            if (!partNumbers.Any())
+            {
+                return new List<CandidateEdition>();
+            }
+
+            var matchingBooks = _bookService.GetBooksByAuthorMetadataId(author.AuthorMetadataId)
+                .Where(book => MatchesSeriesPart(book, partNumbers))
+                .DistinctBy(x => x.Id)
+                .ToList();
+
+            var candidates = new List<CandidateEdition>();
+            foreach (var book in matchingBooks)
+            {
+                candidates.AddRange(GetDbCandidatesByBook(book, includeExisting));
+            }
+
+            return candidates;
+        }
+
+        private static List<double> ParsePartNumbers(IEnumerable<string> bookTags)
+        {
+            var partNumbers = new List<double>();
+
+            foreach (var tag in bookTags.Where(x => x.IsNotNullOrWhiteSpace()))
+            {
+                var leadingMatch = LeadingPartRegex.Match(tag);
+                if (leadingMatch.Success && TryParsePartNumber(leadingMatch.Groups["number"].Value, out var leadingPart))
+                {
+                    AddPartIfUnique(partNumbers, leadingPart);
+                }
+
+                foreach (Match match in SeriesPartRegex.Matches(tag))
+                {
+                    if (TryParsePartNumber(match.Groups["number"].Value, out var partNumber))
+                    {
+                        AddPartIfUnique(partNumbers, partNumber);
+                    }
+                }
+            }
+
+            return partNumbers;
+        }
+
+        private static void AddPartIfUnique(List<double> partNumbers, double value)
+        {
+            if (partNumbers.All(x => Math.Abs(x - value) > 0.01))
+            {
+                partNumbers.Add(value);
+            }
+        }
+
+        private static bool TryParsePartNumber(string value, out double partNumber)
+        {
+            partNumber = 0;
+
+            if (value.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            var cleaned = value.Trim();
+            if (double.TryParse(cleaned, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out partNumber))
+            {
+                return true;
+            }
+
+            var roman = RomanToInt(cleaned);
+            if (roman > 0)
+            {
+                partNumber = roman;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static int RomanToInt(string value)
+        {
+            if (value.IsNullOrWhiteSpace())
+            {
+                return 0;
+            }
+
+            var roman = value.ToUpperInvariant();
+            var total = 0;
+            var lastValue = 0;
+
+            for (var i = roman.Length - 1; i >= 0; i--)
+            {
+                var current = roman[i] switch
+                {
+                    'I' => 1,
+                    'V' => 5,
+                    'X' => 10,
+                    'L' => 50,
+                    'C' => 100,
+                    'D' => 500,
+                    'M' => 1000,
+                    _ => 0
+                };
+
+                if (current == 0)
+                {
+                    return 0;
+                }
+
+                if (current < lastValue)
+                {
+                    total -= current;
+                }
+                else
+                {
+                    total += current;
+                    lastValue = current;
+                }
+            }
+
+            return total;
+        }
+
+        private static bool MatchesSeriesPart(Book book, List<double> partNumbers)
+        {
+            if (book == null || !(book.SeriesLinks?.Value?.Any() ?? false))
+            {
+                return false;
+            }
+
+            foreach (var seriesLink in book.SeriesLinks.Value)
+            {
+                foreach (var partNumber in partNumbers)
+                {
+                    if (Math.Abs(seriesLink.SeriesPosition - partNumber) < 0.01)
+                    {
+                        return true;
+                    }
+
+                    if (TryParsePartNumber(seriesLink.Position, out var seriesPosition) && Math.Abs(seriesPosition - partNumber) < 0.01)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         private List<CandidateEdition> ToCandidates(IEnumerable<Book> books, HashSet<string> seenCandidates, IdentificationOverrides idOverrides)
