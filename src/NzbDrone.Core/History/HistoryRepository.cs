@@ -49,7 +49,9 @@ namespace NzbDrone.Core.History
                     history.Author = author;
                     history.Book = book;
                     return history;
-                }).ToList();
+                })
+                .OrderByDescending(h => h.Date)
+                .ToList();
         }
 
         public List<EntityHistory> GetByAuthor(int authorId, EntityHistoryEventType? eventType)

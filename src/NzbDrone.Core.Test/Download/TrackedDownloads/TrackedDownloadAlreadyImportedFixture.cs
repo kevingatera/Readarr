@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using FizzWare.NBuilder;
 using FluentAssertions;
@@ -126,6 +127,31 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             Subject.IsImported(_trackedDownload, _historyItems)
                    .Should()
                    .BeTrue();
+        }
+
+        [Test]
+        public void should_return_false_if_most_recent_event_is_grabbed()
+        {
+            GivenEpisodes(1);
+
+            var imported = Builder<EntityHistory>.CreateNew()
+                                                 .With(h => h.BookId = _books[0].Id)
+                                                 .With(h => h.EventType = EntityHistoryEventType.BookFileImported)
+                                                 .With(h => h.Date = DateTime.UtcNow.AddMinutes(-5))
+                                                 .Build();
+
+            var grabbed = Builder<EntityHistory>.CreateNew()
+                                                .With(h => h.BookId = _books[0].Id)
+                                                .With(h => h.EventType = EntityHistoryEventType.Grabbed)
+                                                .With(h => h.Date = DateTime.UtcNow)
+                                                .Build();
+
+            _historyItems.Add(imported);
+            _historyItems.Add(grabbed);
+
+            Subject.IsImported(_trackedDownload, _historyItems)
+                   .Should()
+                   .BeFalse();
         }
     }
 }
