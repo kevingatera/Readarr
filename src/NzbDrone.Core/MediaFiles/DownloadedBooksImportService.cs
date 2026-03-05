@@ -220,7 +220,7 @@ namespace NzbDrone.Core.MediaFiles
                 Author = author
             };
 
-            var historyBookOverride = GetHistoryBookOverride(downloadClientItem);
+            var historyBookOverride = GetHistoryBookOverride(downloadClientItem, new[] { folderInfo?.BookTitle, directoryInfo.Name });
 
             if (historyBookOverride != null)
             {
@@ -314,7 +314,7 @@ namespace NzbDrone.Core.MediaFiles
                 Author = author
             };
 
-            var historyBookOverride = GetHistoryBookOverride(downloadClientItem);
+            var historyBookOverride = GetHistoryBookOverride(downloadClientItem, new[] { Path.GetFileNameWithoutExtension(fileInfo.Name) });
 
             if (historyBookOverride != null)
             {
@@ -348,14 +348,16 @@ namespace NzbDrone.Core.MediaFiles
             return folder;
         }
 
-        private Book GetHistoryBookOverride(DownloadClientItem downloadClientItem)
+        private Book GetHistoryBookOverride(DownloadClientItem downloadClientItem, IEnumerable<string> titleHints = null)
         {
             if (downloadClientItem == null || downloadClientItem.DownloadId.IsNullOrWhiteSpace())
             {
                 return null;
             }
 
-            var grabbedBookIds = _historyService.Find(downloadClientItem.DownloadId, EntityHistoryEventType.Grabbed)
+            var grabbedHistory = _historyService.Find(downloadClientItem.DownloadId, EntityHistoryEventType.Grabbed);
+
+            var grabbedBookIds = grabbedHistory
                 .Select(h => h.BookId)
                 .Where(id => id > 0)
                 .Distinct()
@@ -368,13 +370,91 @@ namespace NzbDrone.Core.MediaFiles
 
             try
             {
-                return _bookService.GetBook(grabbedBookIds[0]);
+                var historyBook = _bookService.GetBook(grabbedBookIds[0]);
+                if (!IsHistoryBookOverrideConsistent(historyBook, grabbedHistory, downloadClientItem, titleHints))
+                {
+                    _logger.Debug("Skipping history book override for downloadId={0}; override book '{1}' does not match current title hints", downloadClientItem.DownloadId, historyBook?.Title);
+                    return null;
+                }
+
+                return historyBook;
             }
             catch (Exception e)
             {
                 _logger.Debug(e, "Unable to load history book override for downloadId={0}", downloadClientItem.DownloadId);
                 return null;
             }
+        }
+
+        private bool IsHistoryBookOverrideConsistent(Book historyBook, List<EntityHistory> grabbedHistory, DownloadClientItem downloadClientItem, IEnumerable<string> titleHints)
+        {
+            if (historyBook == null || historyBook.Title.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            var expectedTitle = Parser.Parser.NormalizeTitle(historyBook.Title);
+            if (expectedTitle.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            var candidateTitles = new List<string>();
+
+            if (downloadClientItem?.Title.IsNotNullOrWhiteSpace() ?? false)
+            {
+                candidateTitles.Add(downloadClientItem.Title);
+            }
+
+            candidateTitles.AddRange(grabbedHistory
+                .Select(h => h.SourceTitle)
+                .Where(x => x.IsNotNullOrWhiteSpace()));
+
+            if (titleHints != null)
+            {
+                candidateTitles.AddRange(titleHints.Where(x => x.IsNotNullOrWhiteSpace()));
+            }
+
+            foreach (var candidate in candidateTitles)
+            {
+                var parsed = Parser.Parser.ParseBookTitle(candidate);
+                if (parsed?.BookTitle.IsNotNullOrWhiteSpace() ?? false)
+                {
+                    if (LooksLikeSameBook(expectedTitle, parsed.BookTitle))
+                    {
+                        return true;
+                    }
+                }
+
+                if (LooksLikeSameBook(expectedTitle, candidate) || LooksLikeSameBook(expectedTitle, candidate.RemoveAfterDash()))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool LooksLikeSameBook(string expectedNormalizedTitle, string candidateTitle)
+        {
+            if (candidateTitle.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            var normalizedCandidate = Parser.Parser.NormalizeTitle(candidateTitle);
+            if (normalizedCandidate.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            if (normalizedCandidate.Contains(expectedNormalizedTitle, StringComparison.InvariantCultureIgnoreCase) ||
+                expectedNormalizedTitle.Contains(normalizedCandidate, StringComparison.InvariantCultureIgnoreCase))
+            {
+                return true;
+            }
+
+            return normalizedCandidate.LevenshteinCoefficient(expectedNormalizedTitle) >= 0.72;
         }
 
         private ImportResult FileIsLockedResult(string audioFile)
