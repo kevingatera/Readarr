@@ -11,6 +11,7 @@ using NzbDrone.Common.Disk;
 using NzbDrone.Core.Books;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.Download.TrackedDownloads;
+using NzbDrone.Core.History;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MediaFiles.BookImport;
 using NzbDrone.Core.Parser;
@@ -333,6 +334,95 @@ namespace NzbDrone.Core.Test.MediaFiles
             Subject.ProcessPath(_droneFactory, ImportMode.Copy, _trackedDownload.RemoteBook.Author, _trackedDownload.DownloadItem);
 
             DiskProvider.FolderExists(_subFolders[0]).Should().BeTrue();
+        }
+
+        [Test]
+        public void should_apply_history_book_override_when_grabbed_title_matches()
+        {
+            var historyBook = new Book
+            {
+                Id = 42,
+                Title = "Dark Operator",
+                Author = null
+            };
+
+            _trackedDownload.DownloadItem.Title = "01 Dark Operator";
+
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.Find(_trackedDownload.DownloadItem.DownloadId, EntityHistoryEventType.Grabbed))
+                .Returns(new List<EntityHistory>
+                {
+                    new EntityHistory
+                    {
+                        BookId = 42,
+                        SourceTitle = "Dark Operator by Nick Cole, Jason Anspach"
+                    }
+                });
+
+            Mocker.GetMock<IBookService>()
+                .Setup(s => s.GetBook(42))
+                .Returns(historyBook);
+
+            IdentificationOverrides capturedOverrides = null;
+
+            Mocker.GetMock<IMakeImportDecision>()
+                .Setup(v => v.GetImportDecisions(It.IsAny<List<IFileInfo>>(), It.IsAny<IdentificationOverrides>(), It.IsAny<ImportDecisionMakerInfo>(), It.IsAny<ImportDecisionMakerConfig>()))
+                .Callback<List<IFileInfo>, IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((files, idOverrides, info, config) => capturedOverrides = idOverrides)
+                .Returns(new List<ImportDecision<LocalBook>>());
+
+            Mocker.GetMock<IImportApprovedBooks>()
+                .Setup(s => s.Import(It.IsAny<List<ImportDecision<LocalBook>>>(), It.IsAny<bool>(), It.IsAny<DownloadClientItem>(), It.IsAny<ImportMode>()))
+                .Returns(new List<ImportResult>());
+
+            Subject.ProcessPath(_droneFactory, ImportMode.Auto, _trackedDownload.RemoteBook.Author, _trackedDownload.DownloadItem);
+
+            capturedOverrides.Should().NotBeNull();
+            capturedOverrides.Book.Should().NotBeNull();
+            capturedOverrides.Book.Id.Should().Be(42);
+        }
+
+        [Test]
+        public void should_skip_history_book_override_when_title_does_not_match()
+        {
+            var historyBook = new Book
+            {
+                Id = 43,
+                Title = "Forgotten Ruin",
+                Author = null
+            };
+
+            _trackedDownload.DownloadItem.Title = "01 The Bold";
+
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.Find(_trackedDownload.DownloadItem.DownloadId, EntityHistoryEventType.Grabbed))
+                .Returns(new List<EntityHistory>
+                {
+                    new EntityHistory
+                    {
+                        BookId = 43,
+                        SourceTitle = "The Bold by Nick Cole, Jason Anspach"
+                    }
+                });
+
+            Mocker.GetMock<IBookService>()
+                .Setup(s => s.GetBook(43))
+                .Returns(historyBook);
+
+            IdentificationOverrides capturedOverrides = null;
+
+            Mocker.GetMock<IMakeImportDecision>()
+                .Setup(v => v.GetImportDecisions(It.IsAny<List<IFileInfo>>(), It.IsAny<IdentificationOverrides>(), It.IsAny<ImportDecisionMakerInfo>(), It.IsAny<ImportDecisionMakerConfig>()))
+                .Callback<List<IFileInfo>, IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((files, idOverrides, info, config) => capturedOverrides = idOverrides)
+                .Returns(new List<ImportDecision<LocalBook>>());
+
+            Mocker.GetMock<IImportApprovedBooks>()
+                .Setup(s => s.Import(It.IsAny<List<ImportDecision<LocalBook>>>(), It.IsAny<bool>(), It.IsAny<DownloadClientItem>(), It.IsAny<ImportMode>()))
+                .Returns(new List<ImportResult>());
+
+            Subject.ProcessPath(_droneFactory, ImportMode.Auto, _trackedDownload.RemoteBook.Author, _trackedDownload.DownloadItem);
+
+            capturedOverrides.Should().NotBeNull();
+            capturedOverrides.Book.Should().BeNull();
         }
 
         private void VerifyNoImport()
