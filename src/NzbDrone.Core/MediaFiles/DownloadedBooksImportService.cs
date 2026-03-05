@@ -448,13 +448,25 @@ namespace NzbDrone.Core.MediaFiles
                 return false;
             }
 
-            if (normalizedCandidate.Contains(expectedNormalizedTitle, StringComparison.InvariantCultureIgnoreCase) ||
-                expectedNormalizedTitle.Contains(normalizedCandidate, StringComparison.InvariantCultureIgnoreCase))
+            var expectedTokens = expectedNormalizedTitle
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .ToList();
+
+            var candidateTokens = normalizedCandidate
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .ToList();
+
+            if (expectedTokens.Any() && expectedTokens.All(token => candidateTokens.Contains(token)))
             {
                 return true;
             }
 
-            return normalizedCandidate.LevenshteinCoefficient(expectedNormalizedTitle) >= 0.72;
+            if (candidateTokens.Any() && candidateTokens.All(token => expectedTokens.Contains(token)))
+            {
+                return true;
+            }
+
+            return normalizedCandidate.LevenshteinCoefficient(expectedNormalizedTitle) >= 0.8;
         }
 
         private ImportResult FileIsLockedResult(string audioFile)
