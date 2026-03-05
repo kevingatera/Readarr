@@ -26,10 +26,35 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
                 {
                     new EntityHistory()
                     {
-                         DownloadId = "35238",
-                         SourceTitle = "Audio Author - Audio Book [2018 - FLAC]",
-                         AuthorId = 5,
-                         BookId = 4,
+                        DownloadId = "35238",
+                        SourceTitle = "Audio Author - Audio Book [2018 - FLAC]",
+                        AuthorId = 5,
+                        BookId = 4,
+                    }
+                });
+        }
+
+        private void GivenDownloadHistoryWithImportIncompleteThenGrabbed()
+        {
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.FindByDownloadId(It.Is<string>(sr => sr == "35238")))
+                .Returns(new List<EntityHistory>
+                {
+                    new EntityHistory
+                    {
+                        DownloadId = "35238",
+                        SourceTitle = "01 The Bold",
+                        AuthorId = 999,
+                        BookId = 999,
+                        EventType = EntityHistoryEventType.BookImportIncomplete
+                    },
+                    new EntityHistory
+                    {
+                        DownloadId = "35238",
+                        SourceTitle = "Audio Author - Audio Book [2018 - FLAC]",
+                        AuthorId = 5,
+                        BookId = 4,
+                        EventType = EntityHistoryEventType.Grabbed
                     }
                 });
         }
@@ -61,6 +86,53 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             };
 
             var item = new DownloadClientItem()
+            {
+                Title = "The torrent release folder",
+                DownloadId = "35238",
+                DownloadClientInfo = new DownloadClientItemClientInfo
+                {
+                    Protocol = client.Protocol,
+                    Id = client.Id,
+                    Name = client.Name
+                }
+            };
+
+            var trackedDownload = Subject.TrackDownload(client, item);
+
+            trackedDownload.Should().NotBeNull();
+            trackedDownload.RemoteBook.Should().NotBeNull();
+            trackedDownload.RemoteBook.Author.Should().NotBeNull();
+            trackedDownload.RemoteBook.Author.Id.Should().Be(5);
+            trackedDownload.RemoteBook.Books.First().Id.Should().Be(4);
+        }
+
+        [Test]
+        public void should_prefer_grabbed_source_title_when_latest_history_is_import_incomplete()
+        {
+            GivenDownloadHistoryWithImportIncompleteThenGrabbed();
+
+            var remoteBook = new RemoteBook
+            {
+                Author = new Author { Id = 5 },
+                Books = new List<Book> { new Book { Id = 4 } },
+                ParsedBookInfo = new ParsedBookInfo
+                {
+                    BookTitle = "Audio Book",
+                    AuthorName = "Audio Author"
+                }
+            };
+
+            Mocker.GetMock<IParsingService>()
+                  .Setup(s => s.Map(It.Is<ParsedBookInfo>(i => i.BookTitle == "Audio Book" && i.AuthorName == "Audio Author"), It.IsAny<int>(), It.IsAny<IEnumerable<int>>()))
+                  .Returns(remoteBook);
+
+            var client = new DownloadClientDefinition
+            {
+                Id = 1,
+                Protocol = DownloadProtocol.Torrent
+            };
+
+            var item = new DownloadClientItem
             {
                 Title = "The torrent release folder",
                 DownloadId = "35238",
