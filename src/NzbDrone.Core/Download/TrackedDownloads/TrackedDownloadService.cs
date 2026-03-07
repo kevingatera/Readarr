@@ -105,8 +105,9 @@ namespace NzbDrone.Core.Download.TrackedDownloads
         public TrackedDownload TrackDownload(DownloadClientDefinition downloadClient, DownloadClientItem downloadItem)
         {
             var existingItem = Find(downloadItem.DownloadId);
+            var latestHistoryEvent = _downloadHistoryService.GetLatestDownloadHistoryItem(downloadItem.DownloadId);
 
-            if (existingItem != null && existingItem.State != TrackedDownloadState.Downloading)
+            if (existingItem != null && existingItem.State != TrackedDownloadState.Downloading && !ShouldResetTrackedDownload(existingItem, latestHistoryEvent))
             {
                 LogItemChange(existingItem, existingItem.DownloadItem, downloadItem);
 
@@ -136,7 +137,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                     trackedDownload.RemoteBook = _parsingService.Map(parsedBookInfo);
                 }
 
-                var downloadHistory = _downloadHistoryService.GetLatestDownloadHistoryItem(downloadItem.DownloadId);
+                var downloadHistory = latestHistoryEvent;
 
                 if (downloadHistory != null)
                 {
@@ -235,6 +236,12 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
             _cache.Set(trackedDownload.DownloadItem.DownloadId, trackedDownload);
             return trackedDownload;
+        }
+
+        private static bool ShouldResetTrackedDownload(TrackedDownload existingItem, Download.History.DownloadHistory latestHistoryEvent)
+        {
+            return existingItem.State != TrackedDownloadState.Downloading &&
+                   latestHistoryEvent?.EventType == DownloadHistoryEventType.DownloadGrabbed;
         }
 
         public List<TrackedDownload> GetTrackedDownloads()
