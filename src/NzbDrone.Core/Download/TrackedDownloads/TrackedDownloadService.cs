@@ -153,8 +153,13 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
                 if (historyItems.Any())
                 {
-                    var firstHistoryItem = historyItems.First();
-                    var grabbedHistoryItems = historyItems.Where(v => v.EventType == EntityHistoryEventType.Grabbed).ToList();
+                    var latestGrabbedHistoryItem = historyItems.FirstOrDefault(v => v.EventType == EntityHistoryEventType.Grabbed);
+                    var relevantHistoryItems = latestGrabbedHistoryItem != null
+                        ? historyItems.Where(v => v.Date >= latestGrabbedHistoryItem.Date).ToList()
+                        : historyItems;
+
+                    var firstHistoryItem = relevantHistoryItems.First();
+                    var grabbedHistoryItems = relevantHistoryItems.Where(v => v.EventType == EntityHistoryEventType.Grabbed).ToList();
                     var grabbedEvent = grabbedHistoryItems.FirstOrDefault();
                     var fallbackHistoryItem = grabbedEvent ?? firstHistoryItem;
 

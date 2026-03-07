@@ -60,6 +60,42 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
                 });
         }
 
+        private void GivenDownloadHistoryWithMultipleGrabs()
+        {
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.FindByDownloadId(It.Is<string>(sr => sr == "35238")))
+                .Returns(new List<EntityHistory>
+                {
+                    new EntityHistory
+                    {
+                        DownloadId = "35238",
+                        SourceTitle = "New Author - New Book [2024 - M4B]",
+                        AuthorId = 7,
+                        BookId = 6,
+                        EventType = EntityHistoryEventType.Grabbed,
+                        Date = new System.DateTime(2026, 3, 7, 22, 0, 0, System.DateTimeKind.Utc)
+                    },
+                    new EntityHistory
+                    {
+                        DownloadId = "35238",
+                        SourceTitle = "Old Author - Old Book [2023 - M4B]",
+                        AuthorId = 5,
+                        BookId = 4,
+                        EventType = EntityHistoryEventType.Grabbed,
+                        Date = new System.DateTime(2026, 3, 6, 22, 0, 0, System.DateTimeKind.Utc)
+                    },
+                    new EntityHistory
+                    {
+                        DownloadId = "35238",
+                        SourceTitle = "Old Author - Old Book [2023 - M4B]",
+                        AuthorId = 5,
+                        BookId = 4,
+                        EventType = EntityHistoryEventType.DownloadIgnored,
+                        Date = new System.DateTime(2026, 3, 6, 23, 0, 0, System.DateTimeKind.Utc)
+                    }
+                });
+        }
+
         [Test]
         public void should_track_downloads_using_the_source_title_if_it_cannot_be_found_using_the_download_title()
         {
@@ -224,6 +260,61 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             trackedDownload.RemoteBook.Should().NotBeNull();
             trackedDownload.RemoteBook.Author.Id.Should().Be(5);
             trackedDownload.RemoteBook.Books.First().Id.Should().Be(4);
+        }
+
+        [Test]
+        public void should_only_use_latest_grab_history_when_same_download_is_grabbed_again()
+        {
+            GivenDownloadHistoryWithMultipleGrabs();
+
+            var remoteBook = new RemoteBook
+            {
+                Author = new Author { Id = 7 },
+                Books = new List<Book> { new Book { Id = 6 } },
+                ParsedBookInfo = new ParsedBookInfo
+                {
+                    BookTitle = "New Book",
+                    AuthorName = "New Author"
+                }
+            };
+
+            Mocker.GetMock<IParsingService>()
+                  .Setup(s => s.Map(It.Is<ParsedBookInfo>(i => i.BookTitle == "New Book" && i.AuthorName == "New Author"), 7, It.Is<IEnumerable<int>>(ids => ids.Single() == 6)))
+                  .Returns(remoteBook);
+
+            Mocker.GetMock<IDownloadHistoryService>()
+                  .Setup(s => s.GetLatestDownloadHistoryItem("35238"))
+                  .Returns(new DownloadHistory
+                  {
+                      DownloadId = "35238",
+                      EventType = DownloadHistoryEventType.DownloadGrabbed
+                  });
+
+            var client = new DownloadClientDefinition
+            {
+                Id = 1,
+                Protocol = DownloadProtocol.Torrent
+            };
+
+            var item = new DownloadClientItem
+            {
+                Title = "The torrent release folder",
+                DownloadId = "35238",
+                DownloadClientInfo = new DownloadClientItemClientInfo
+                {
+                    Protocol = client.Protocol,
+                    Id = client.Id,
+                    Name = client.Name
+                }
+            };
+
+            var trackedDownload = Subject.TrackDownload(client, item);
+
+            trackedDownload.Should().NotBeNull();
+            trackedDownload.RemoteBook.Should().NotBeNull();
+            trackedDownload.RemoteBook.Author.Id.Should().Be(7);
+            trackedDownload.RemoteBook.Books.Should().ContainSingle();
+            trackedDownload.RemoteBook.Books.First().Id.Should().Be(6);
         }
 
         [Test]
