@@ -6,10 +6,14 @@ function findImage(images, coverType) {
   return images.find((image) => image.coverType === coverType);
 }
 
-function getUrl(image, coverType, size) {
-  const imageUrl = image?.url;
+function getUrl(image, coverType, size, useRemoteFallback = false) {
+  const imageUrl = useRemoteFallback ? image?.remoteUrl : image?.url;
 
   if (imageUrl) {
+    if (useRemoteFallback) {
+      return imageUrl;
+    }
+
     return imageUrl.replace(`${coverType}.jpg`, `${coverType}-${size}.jpg`);
   }
 }
@@ -67,6 +71,7 @@ class AuthorImage extends Component {
       this.setState({
         image: nextImage,
         url: getUrl(nextImage, coverType, pixelRatio * size),
+        isLoaded: false,
         hasError: false
         // Don't reset isLoaded, as we want to immediately try to
         // show the new image, whether an image was shown previously
@@ -89,6 +94,29 @@ class AuthorImage extends Component {
   // Listeners
 
   onError = () => {
+    const {
+      image,
+      url,
+      pixelRatio
+    } = this.state;
+
+    const {
+      coverType,
+      size
+    } = this.props;
+
+    const remoteUrl = getUrl(image, coverType, pixelRatio * size, true);
+
+    if (remoteUrl && remoteUrl !== url) {
+      this.setState({
+        url: remoteUrl,
+        hasError: false,
+        isLoaded: true
+      });
+
+      return;
+    }
+
     this.setState({
       hasError: true
     });

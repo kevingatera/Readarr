@@ -47,5 +47,23 @@ namespace NzbDrone.Core.Test.MetadataSource
 
             details.BaseUrl.ToString().Should().Contain("bookinfo.club/v1");
         }
+
+        [Test]
+        public void should_request_gzip_from_default_provider()
+        {
+            var details = Subject.GetRequestBuilder().Create().Build();
+
+            details.Headers.Get("Accept-Encoding").Should().Be("gzip");
+        }
+
+        [Test]
+        public void should_request_gzip_from_custom_provider()
+        {
+            WithCustomProvider();
+
+            var details = Subject.GetRequestBuilder().Create().Build();
+
+            details.Headers.Get("Accept-Encoding").Should().Be("gzip");
+        }
     }
 }

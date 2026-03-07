@@ -79,7 +79,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             var moveToTop = (isRecentBook && Settings.RecentTvPriority == (int)QBittorrentPriority.First) || (!isRecentBook && Settings.OlderTvPriority == (int)QBittorrentPriority.First);
             var forceStart = (QBittorrentState)Settings.InitialState == QBittorrentState.ForceStart;
 
-            Proxy.AddTorrentFromUrl(magnetLink, addHasSetShareLimits && setShareLimits ? remoteBook.SeedConfiguration : null, Settings);
+            TryAddTorrent(() => Proxy.AddTorrentFromUrl(magnetLink, addHasSetShareLimits && setShareLimits ? remoteBook.SeedConfiguration : null, Settings), hash);
 
             if ((!addHasSetShareLimits && setShareLimits) || moveToTop || forceStart)
             {
@@ -138,7 +138,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             var moveToTop = (isRecentBook && Settings.RecentTvPriority == (int)QBittorrentPriority.First) || (!isRecentBook && Settings.OlderTvPriority == (int)QBittorrentPriority.First);
             var forceStart = (QBittorrentState)Settings.InitialState == QBittorrentState.ForceStart;
 
-            Proxy.AddTorrentFromFile(filename, fileContent, addHasSetShareLimits ? remoteBook.SeedConfiguration : null, Settings);
+            TryAddTorrent(() => Proxy.AddTorrentFromFile(filename, fileContent, addHasSetShareLimits ? remoteBook.SeedConfiguration : null, Settings), hash);
 
             if ((!addHasSetShareLimits && setShareLimits) || moveToTop || forceStart)
             {
@@ -211,6 +211,31 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
 
             _logger.Warn("Failed to load torrent '{0}' within 500 ms, skipping additional parameters.", hash);
             return false;
+        }
+
+        private void TryAddTorrent(Action addTorrent, string hash)
+        {
+            try
+            {
+                addTorrent();
+            }
+            catch (DownloadClientException ex) when (TorrentAlreadyLoaded(hash))
+            {
+                _logger.Info(ex, "Torrent '{0}' already exists in qBittorrent, treating add as successful.", hash);
+            }
+        }
+
+        private bool TorrentAlreadyLoaded(string hash)
+        {
+            try
+            {
+                return Proxy.IsTorrentLoaded(hash.ToLower(), Settings);
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug(ex, "Unable to verify whether torrent '{0}' is already loaded in qBittorrent.", hash);
+                return false;
+            }
         }
 
         public override string Name => "qBittorrent";
