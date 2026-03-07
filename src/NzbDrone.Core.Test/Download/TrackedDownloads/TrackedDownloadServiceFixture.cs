@@ -6,6 +6,7 @@ using NUnit.Framework;
 using NzbDrone.Core.Books;
 using NzbDrone.Core.Books.Events;
 using NzbDrone.Core.Download;
+using NzbDrone.Core.Download.History;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.History;
 using NzbDrone.Core.Indexers;
@@ -149,6 +150,78 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             trackedDownload.Should().NotBeNull();
             trackedDownload.RemoteBook.Should().NotBeNull();
             trackedDownload.RemoteBook.Author.Should().NotBeNull();
+            trackedDownload.RemoteBook.Author.Id.Should().Be(5);
+            trackedDownload.RemoteBook.Books.First().Id.Should().Be(4);
+        }
+
+        [Test]
+        public void should_reset_ignored_download_when_same_hash_is_grabbed_again()
+        {
+            GivenDownloadHistory();
+
+            var remoteBook = new RemoteBook
+            {
+                Author = new Author { Id = 5 },
+                Books = new List<Book> { new Book { Id = 4 } },
+                ParsedBookInfo = new ParsedBookInfo
+                {
+                    BookTitle = "Audio Book",
+                    AuthorName = "Audio Author"
+                }
+            };
+
+            Mocker.GetMock<IParsingService>()
+                  .Setup(s => s.Map(It.Is<ParsedBookInfo>(i => i.BookTitle == "Audio Book" && i.AuthorName == "Audio Author"), It.IsAny<int>(), It.IsAny<IEnumerable<int>>()))
+                  .Returns(remoteBook);
+
+            var ignoredHistory = new DownloadHistory
+            {
+                DownloadId = "35238",
+                EventType = DownloadHistoryEventType.DownloadIgnored
+            };
+
+            var grabbedHistory = new DownloadHistory
+            {
+                DownloadId = "35238",
+                EventType = DownloadHistoryEventType.DownloadGrabbed
+            };
+
+            var callCount = 0;
+
+            Mocker.GetMock<IDownloadHistoryService>()
+                  .Setup(s => s.GetLatestDownloadHistoryItem("35238"))
+                  .Returns(() =>
+                  {
+                      callCount++;
+                      return callCount == 1 ? ignoredHistory : grabbedHistory;
+                  });
+
+            var client = new DownloadClientDefinition
+            {
+                Id = 1,
+                Protocol = DownloadProtocol.Torrent
+            };
+
+            var item = new DownloadClientItem
+            {
+                Title = "The torrent release folder",
+                DownloadId = "35238",
+                DownloadClientInfo = new DownloadClientItemClientInfo
+                {
+                    Protocol = client.Protocol,
+                    Id = client.Id,
+                    Name = client.Name
+                }
+            };
+
+            var ignoredDownload = Subject.TrackDownload(client, item);
+            ignoredDownload.State.Should().Be(TrackedDownloadState.Ignored);
+
+            var trackedDownload = Subject.TrackDownload(client, item);
+
+            trackedDownload.Should().NotBeNull();
+            trackedDownload.State.Should().Be(TrackedDownloadState.Downloading);
+            trackedDownload.RemoteBook.Should().NotBeNull();
             trackedDownload.RemoteBook.Author.Id.Should().Be(5);
             trackedDownload.RemoteBook.Books.First().Id.Should().Be(4);
         }
