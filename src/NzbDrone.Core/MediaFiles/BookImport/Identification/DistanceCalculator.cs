@@ -210,6 +210,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
         {
             var rawTitles = new List<string>
             {
+                localTracks.MostCommon(x => x.FileTrackInfo.Title),
+                localTracks.MostCommon(x => x.FileTrackInfo.CleanTitle),
                 localTracks.MostCommon(x => x.FileTrackInfo.BookTitle),
                 localTracks.MostCommon(x => x.FolderTrackInfo?.BookTitle),
                 localTracks.MostCommon(x => x.DownloadClientBookInfo?.BookTitle),
@@ -416,9 +418,9 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
         {
             var authors = new List<string>(fileAuthors);
 
-            if (fileAuthors.Count == 1)
+            foreach (var author in fileAuthors)
             {
-                authors.AddRange(SplitAuthor(fileAuthors[0]));
+                authors.AddRange(SplitAuthor(author));
             }
 
             foreach (var author in fileAuthors)
