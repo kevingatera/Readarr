@@ -408,6 +408,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
         {
             var bookTags = new List<string>
             {
+                localEdition.LocalBooks.MostCommon(x => x.FileTrackInfo.Title),
+                localEdition.LocalBooks.MostCommon(x => x.FileTrackInfo.CleanTitle),
                 localEdition.LocalBooks.MostCommon(x => x.FileTrackInfo.BookTitle),
                 localEdition.LocalBooks.MostCommon(x => x.FolderTrackInfo?.BookTitle),
                 localEdition.LocalBooks.MostCommon(x => x.DownloadClientBookInfo?.BookTitle),

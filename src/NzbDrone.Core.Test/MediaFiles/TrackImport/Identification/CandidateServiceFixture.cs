@@ -142,5 +142,43 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
 
             result.Should().Contain(x => x.Edition.Id == 900);
         }
+
+        [Test]
+        public void should_use_track_title_when_book_tag_contains_series_prefix()
+        {
+            var author = new Author { AuthorMetadataId = 14 };
+            var localEdition = new LocalEdition
+            {
+                LocalBooks = new List<LocalBook>
+                {
+                    new LocalBook
+                    {
+                        FileTrackInfo = new ParsedTrackInfo
+                        {
+                            Title = "Gods & Legionnaires",
+                            BookTitle = "02 Gods & Legionnaires",
+                            Authors = new List<string>
+                            {
+                                "Galaxy's Edge (Savage Wars)",
+                                "Jason Anspach, Nick Cole"
+                            }
+                        }
+                    }
+                }
+            };
+
+            Mocker.GetMock<IBookService>()
+                .Setup(s => s.GetCandidates(author.AuthorMetadataId, It.IsAny<string>()))
+                .Returns(new List<Book>());
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(s => s.GetCandidates(author.AuthorMetadataId, It.IsAny<string>()))
+                .Returns(new List<Edition>());
+
+            Subject.GetDbCandidatesFromTags(localEdition, new IdentificationOverrides { Author = author }, false);
+
+            Mocker.GetMock<IBookService>()
+                .Verify(s => s.GetCandidates(author.AuthorMetadataId, It.Is<string>(x => x == "Gods & Legionnaires")), Times.AtLeastOnce());
+        }
     }
 }

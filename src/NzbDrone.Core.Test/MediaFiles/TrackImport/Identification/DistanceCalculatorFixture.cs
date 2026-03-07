@@ -90,9 +90,51 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
 
             var authors = DistanceCalculator.GetAuthorVariants(input);
 
-            authors.Should().HaveCount(2);
+            authors.Should().HaveCount(4);
             authors.Should().Contain("First Last");
             authors.Should().Contain("Second Third, Fourth Fifth");
+            authors.Should().Contain("Second Third");
+            authors.Should().Contain("Fourth Fifth");
+        }
+
+        [Test]
+        public void should_use_track_title_for_single_file_audiobook_matching()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };
+
+            var book = new Book
+            {
+                Title = "Gods & Legionnaires",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata)
+            };
+
+            var edition = new Edition
+            {
+                Title = "Gods & Legionnaires",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/02 Gods & Legionnaires/Savage Wars (Galaxy's Edge) Book 2 - Gods & Legionnaires.m4b",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "Gods & Legionnaires",
+                        BookTitle = "02 Gods & Legionnaires",
+                        Authors = new List<string>
+                        {
+                            "Galaxy's Edge (Savage Wars)",
+                            "Jason Anspach, Nick Cole"
+                        }
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().NotContain("book");
         }
 
         [Test]
