@@ -17,7 +17,7 @@ function createMapStateToProps() {
     (state) => state.books,
     (state) => state.queue.options,
     (state) => state.queue.paged,
-    createCommandExecutingSelector(commandNames.REFRESH_MONITORED_DOWNLOADS),
+    createCommandExecutingSelector(commandNames.REFRESH_MONITORED_DOWNLOADS, { trigger: 'manual' }),
     (authors, books, options, queue, isRefreshMonitoredDownloadsExecuting) => {
       return {
         isAuthorFetching: authors.isFetching,
@@ -145,7 +145,8 @@ class QueueConnector extends Component {
 
   onRefreshPress = () => {
     this.props.executeCommand({
-      name: commandNames.REFRESH_MONITORED_DOWNLOADS
+      name: commandNames.REFRESH_MONITORED_DOWNLOADS,
+      commandFinished: this.repopulate
     });
   };
 
