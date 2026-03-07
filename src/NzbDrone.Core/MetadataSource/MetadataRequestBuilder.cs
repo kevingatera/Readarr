@@ -24,14 +24,20 @@ namespace NzbDrone.Core.MetadataSource
 
         public IHttpRequestBuilderFactory GetRequestBuilder()
         {
+            HttpRequestBuilder builder;
+
             if (_configService.MetadataSource.IsNotNullOrWhiteSpace())
             {
-                return new HttpRequestBuilder(_configService.MetadataSource.TrimEnd("/") + "/{route}").KeepAlive().CreateFactory();
+                builder = new HttpRequestBuilder(_configService.MetadataSource.TrimEnd("/") + "/{route}").KeepAlive();
             }
             else
             {
-                return _defaultRequestFactory.Metadata;
+                builder = _defaultRequestFactory.Metadata.Create();
             }
+
+            return builder
+                .SetHeader("Accept-Encoding", "gzip")
+                .CreateFactory();
         }
     }
 }
