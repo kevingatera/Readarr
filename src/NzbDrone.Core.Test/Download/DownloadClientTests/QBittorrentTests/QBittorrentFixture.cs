@@ -615,6 +615,63 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
         }
 
         [Test]
+        public async Task Download_should_treat_existing_torrent_file_as_success()
+        {
+            var existingTorrent = new QBittorrentTorrent
+            {
+                Hash = "CBC2F069FE8BB2F544EAE707D75BCD3DE9DCF951",
+                Name = _title,
+                Size = 1000,
+                Progress = 1.0,
+                Eta = 8640000,
+                State = "stalledUP",
+                Label = "",
+                SavePath = ""
+            };
+
+            GivenTorrents(new List<QBittorrentTorrent> { existingTorrent });
+
+            Mocker.GetMock<IQBittorrentProxy>()
+                .Setup(s => s.AddTorrentFromFile(It.IsAny<string>(), It.IsAny<byte[]>(), It.IsAny<TorrentSeedConfiguration>(), It.IsAny<QBittorrentSettings>()))
+                .Throws(new DownloadClientException("Download client failed to add torrent"));
+
+            var remoteBook = CreateRemoteBook();
+
+            var id = await Subject.Download(remoteBook, CreateIndexer());
+
+            id.Should().Be("CBC2F069FE8BB2F544EAE707D75BCD3DE9DCF951");
+        }
+
+        [Test]
+        public async Task Download_should_treat_existing_magnet_as_success()
+        {
+            var existingTorrent = new QBittorrentTorrent
+            {
+                Hash = "CBC2F069FE8BB2F544EAE707D75BCD3DE9DCF951",
+                Name = _title,
+                Size = 1000,
+                Progress = 1.0,
+                Eta = 8640000,
+                State = "stalledUP",
+                Label = "",
+                SavePath = ""
+            };
+
+            GivenTorrents(new List<QBittorrentTorrent> { existingTorrent });
+
+            Mocker.GetMock<IQBittorrentProxy>()
+                .Setup(s => s.AddTorrentFromUrl(It.IsAny<string>(), It.IsAny<TorrentSeedConfiguration>(), It.IsAny<QBittorrentSettings>()))
+                .Throws(new DownloadClientException("Download client failed to add torrent by url"));
+
+            var remoteBook = CreateRemoteBook();
+            remoteBook.Release.DownloadUrl = "magnet:?xt=urn:btih:CBC2F069FE8BB2F544EAE707D75BCD3DE9DCF951&tr=udp://abc";
+
+            var id = await Subject.Download(remoteBook, CreateIndexer());
+
+            id.Should().Be("CBC2F069FE8BB2F544EAE707D75BCD3DE9DCF951");
+        }
+
+        [Test]
         public void should_not_be_removable_and_should_not_allow_move_files_if_max_ratio_not_reached()
         {
             GivenGlobalSeedLimits(1.0f);
