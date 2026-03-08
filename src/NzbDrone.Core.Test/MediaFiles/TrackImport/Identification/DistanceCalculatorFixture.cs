@@ -209,7 +209,6 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
                     new SeriesBookLink
                     {
                         Position = "0.6",
-                        SeriesPosition = 0.6,
                         Series = new LazyLoaded<Series>(new Series { Title = "Galaxy's Edge" })
                     }
                 })
