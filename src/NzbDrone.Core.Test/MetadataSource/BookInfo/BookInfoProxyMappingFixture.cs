@@ -113,6 +113,24 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
             authorId.Should().Be(1);
         }
 
+        [Test]
+        public void should_merge_work_author_metadata_when_bulk_authors_are_sparse()
+        {
+            var authors = new Dictionary<string, AuthorMetadata>();
+            var workAuthors = new List<AuthorResource>
+            {
+                new AuthorResource { ForeignId = 1, Name = "Primary Author" }
+            };
+
+            var merged = InvokePrivateStatic<Dictionary<string, AuthorMetadata>>(
+                "MergeAuthorMetadata",
+                authors,
+                workAuthors);
+
+            merged.Should().ContainKey("1");
+            merged["1"].Name.Should().Be("Primary Author");
+        }
+
         private static T InvokePrivateStatic<T>(string methodName, params object[] args)
         {
             var method = typeof(BookInfoProxy).GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static);

@@ -526,7 +526,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 var book = MapBook(work);
                 var authorId = GetAuthorId(work).ToString();
 
-                AddDbIds(authorId, book, authors);
+                AddDbIds(authorId, book, MergeAuthorMetadata(authors, work.Authors));
 
                 books.Add(book);
             }
@@ -988,6 +988,37 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         private static int GetAuthorId(WorkResource b)
         {
             return GetAuthorIds(b).FirstOrDefault();
+        }
+
+        private static Dictionary<string, AuthorMetadata> MergeAuthorMetadata(
+            Dictionary<string, AuthorMetadata> authors,
+            List<AuthorResource> workAuthors)
+        {
+            if (workAuthors == null || !workAuthors.Any())
+            {
+                return authors;
+            }
+
+            var merged = authors;
+
+            foreach (var author in workAuthors.Where(x => x != null && x.ForeignId > 0))
+            {
+                var key = author.ForeignId.ToString();
+
+                if (merged.ContainsKey(key))
+                {
+                    continue;
+                }
+
+                if (ReferenceEquals(merged, authors))
+                {
+                    merged = new Dictionary<string, AuthorMetadata>(authors);
+                }
+
+                merged[key] = MapAuthorMetadata(author);
+            }
+
+            return merged;
         }
 
         private static List<int> GetAuthorIds(WorkResource resource)
