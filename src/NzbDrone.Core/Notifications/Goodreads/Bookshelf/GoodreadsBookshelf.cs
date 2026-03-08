@@ -156,7 +156,7 @@ namespace NzbDrone.Core.Notifications.Goodreads
 
                 var httpResponse = OAuthExecute(builder);
 
-                return httpResponse.Deserialize<PaginatedList<UserShelfResource>>("shelves").List;
+                return httpResponse.Deserialize<PaginatedList<UserShelfResource>>("shelves").List ?? new List<UserShelfResource>();
             }
             catch (Exception ex)
             {
@@ -168,11 +168,10 @@ namespace NzbDrone.Core.Notifications.Goodreads
         private IReadOnlyList<ReviewResource> SearchShelf(string shelf, string query)
         {
             List<ReviewResource> results = new ();
+            var page = 1;
 
             while (true)
             {
-                var page = 1;
-
                 try
                 {
                     var builder = RequestBuilder()
@@ -181,19 +180,27 @@ namespace NzbDrone.Core.Notifications.Goodreads
                         .AddQueryParam("id", Settings.UserId)
                         .AddQueryParam("shelf", shelf)
                         .AddQueryParam("per_page", 200)
-                        .AddQueryParam("page", page++)
+                        .AddQueryParam("page", page)
                         .AddQueryParam("search[query]", query);
 
                     var httpResponse = OAuthExecute(builder);
 
                     var resource = httpResponse.Deserialize<PaginatedList<ReviewResource>>("reviews");
+                    var pageResults = resource.List ?? new List<ReviewResource>();
 
-                    results.AddRange(resource.List);
-
-                    if (resource.Pagination.End >= resource.Pagination.TotalItems)
+                    if (!pageResults.Any())
                     {
                         break;
                     }
+
+                    results.AddRange(pageResults);
+
+                    if (resource.Pagination == null || resource.Pagination.End >= resource.Pagination.TotalItems)
+                    {
+                        break;
+                    }
+
+                    page += 1;
                 }
                 catch (Exception ex)
                 {
