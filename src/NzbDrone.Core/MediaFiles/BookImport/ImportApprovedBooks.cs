@@ -515,7 +515,6 @@ namespace NzbDrone.Core.MediaFiles.BookImport
 
                         return null;
                     }
-
                 }
 
                 if (dbEdition == null || dbEdition.BookId != book.Id)
