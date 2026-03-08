@@ -806,7 +806,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             var metadata = MapAuthorMetadata(resource);
 
             var books = resource.Works
-                .Where(x => x.ForeignId > 0 && GetAuthorId(x) == resource.ForeignId)
+                .Where(x => x.ForeignId > 0 && GetAuthorIds(x).Contains(resource.ForeignId))
                 .Select(MapBook)
                 .ToList();
 
@@ -987,7 +987,35 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
 
         private static int GetAuthorId(WorkResource b)
         {
-            return b.Books.OrderByDescending(x => x.RatingCount * x.AverageRating).FirstOrDefault(x => x.Contributors.Any())?.Contributors.First().ForeignId ?? 0;
+            return GetAuthorIds(b).FirstOrDefault();
+        }
+
+        private static List<int> GetAuthorIds(WorkResource resource)
+        {
+            if (resource == null)
+            {
+                return new List<int>();
+            }
+
+            var authorIds = resource.Books?
+                .Where(x => x != null)
+                .OrderByDescending(x => x.RatingCount * x.AverageRating)
+                .SelectMany(x => x.Contributors ?? new List<ContributorResource>())
+                .Where(x => x != null && x.ForeignId > 0)
+                .Select(x => x.ForeignId)
+                .Distinct()
+                .ToList() ?? new List<int>();
+
+            if (authorIds.Any())
+            {
+                return authorIds;
+            }
+
+            return resource.Authors?
+                .Where(x => x != null && x.ForeignId > 0)
+                .Select(x => x.ForeignId)
+                .Distinct()
+                .ToList() ?? new List<int>();
         }
     }
 }
