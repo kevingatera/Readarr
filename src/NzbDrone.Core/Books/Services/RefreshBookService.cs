@@ -81,8 +81,25 @@ namespace NzbDrone.Core.Books
             try
             {
                 var tuple = _bookInfo.GetBookInfo(book.ForeignBookId);
-                var author = _authorInfo.GetAuthorInfo(tuple.Item1);
                 var newbook = tuple.Item2;
+                Author author;
+
+                try
+                {
+                    author = _authorInfo.GetAuthorInfo(tuple.Item1);
+                }
+                catch (BookInfoException e)
+                {
+                    var localAuthor = book.Author?.Value ?? _authorService.GetAuthor(book.AuthorId);
+
+                    if (localAuthor?.Metadata?.Value == null)
+                    {
+                        throw;
+                    }
+
+                    _logger.Warn(e, "Falling back to local author data for book {0} ({1}) after author fetch failed", book.Title, book.ForeignBookId);
+                    author = localAuthor;
+                }
 
                 newbook.Author = author;
                 newbook.AuthorMetadata = author.Metadata.Value;
