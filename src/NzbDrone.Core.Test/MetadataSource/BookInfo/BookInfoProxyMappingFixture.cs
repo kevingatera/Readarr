@@ -60,6 +60,59 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
             author.Books.Value[0].Title.Should().Be("1812");
         }
 
+        [Test]
+        public void should_prefer_author_role_contributors_over_other_contributors()
+        {
+            var work = new WorkResource
+            {
+                ForeignId = 10,
+                Title = "Example",
+                Books = new List<BookResource>
+                {
+                    new BookResource
+                    {
+                        Contributors = new List<ContributorResource>
+                        {
+                            new ContributorResource { ForeignId = 2, Role = "Narrator" },
+                            new ContributorResource { ForeignId = 1, Role = "Author" }
+                        }
+                    }
+                }
+            };
+
+            var authorId = InvokePrivateStatic<int>("GetAuthorId", work);
+
+            authorId.Should().Be(1);
+        }
+
+        [Test]
+        public void should_fallback_to_work_authors_when_book_contributors_are_non_authors()
+        {
+            var work = new WorkResource
+            {
+                ForeignId = 10,
+                Title = "Example",
+                Books = new List<BookResource>
+                {
+                    new BookResource
+                    {
+                        Contributors = new List<ContributorResource>
+                        {
+                            new ContributorResource { ForeignId = 2, Role = "Narrator" }
+                        }
+                    }
+                },
+                Authors = new List<AuthorResource>
+                {
+                    new AuthorResource { ForeignId = 1, Name = "Primary Author" }
+                }
+            };
+
+            var authorId = InvokePrivateStatic<int>("GetAuthorId", work);
+
+            authorId.Should().Be(1);
+        }
+
         private static T InvokePrivateStatic<T>(string methodName, params object[] args)
         {
             var method = typeof(BookInfoProxy).GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static);

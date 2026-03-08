@@ -524,7 +524,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             foreach (var work in resource.Works)
             {
                 var book = MapBook(work);
-                var authorId = work.Books.OrderByDescending(b => b.AverageRating * b.RatingCount).First().Contributors.First().ForeignId.ToString();
+                var authorId = GetAuthorId(work).ToString();
 
                 AddDbIds(authorId, book, authors);
 
@@ -997,21 +997,35 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 return new List<int>();
             }
 
-            var authorIds = resource.Books?
+            var authorContributorIds = resource.Books?
                 .Where(x => x != null)
                 .OrderByDescending(x => x.RatingCount * x.AverageRating)
                 .SelectMany(x => x.Contributors ?? new List<ContributorResource>())
+                .Where(x => x != null && x.ForeignId > 0 && string.Equals(x.Role, "Author", StringComparison.OrdinalIgnoreCase))
+                .Select(x => x.ForeignId)
+                .Distinct()
+                .ToList() ?? new List<int>();
+
+            if (authorContributorIds.Any())
+            {
+                return authorContributorIds;
+            }
+
+            var workAuthorIds = resource.Authors?
                 .Where(x => x != null && x.ForeignId > 0)
                 .Select(x => x.ForeignId)
                 .Distinct()
                 .ToList() ?? new List<int>();
 
-            if (authorIds.Any())
+            if (workAuthorIds.Any())
             {
-                return authorIds;
+                return workAuthorIds;
             }
 
-            return resource.Authors?
+            return resource.Books?
+                .Where(x => x != null)
+                .OrderByDescending(x => x.RatingCount * x.AverageRating)
+                .SelectMany(x => x.Contributors ?? new List<ContributorResource>())
                 .Where(x => x != null && x.ForeignId > 0)
                 .Select(x => x.ForeignId)
                 .Distinct()
