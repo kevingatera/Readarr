@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using Moq;
 using NUnit.Framework;
 using NzbDrone.Common.Http;
@@ -7,8 +6,8 @@ using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Notifications;
 using NzbDrone.Core.Test.Framework;
 using GoodreadsAuthorizationHeader = NzbDrone.Core.ImportLists.Goodreads.AuthorizationHeader;
-using GoodreadsNotificationBookshelf = NzbDrone.Core.Notifications.Goodreads.GoodreadsBookshelf;
 using GoodreadsBookshelfNotificationSettings = NzbDrone.Core.Notifications.Goodreads.GoodreadsBookshelfNotificationSettings;
+using GoodreadsNotificationBookshelf = NzbDrone.Core.Notifications.Goodreads.GoodreadsBookshelf;
 
 namespace NzbDrone.Core.Test.NotificationTests
 {
@@ -76,8 +75,7 @@ namespace NzbDrone.Core.Test.NotificationTests
             var response = new HttpResponse(
                 request,
                 new HttpHeader { ContentType = "application/json" },
-                "{\"authorization\":\"OAuth test\"}"
-            );
+                "{\"authorization\":\"OAuth test\"}");
 
             return new HttpResponse<GoodreadsAuthorizationHeader>(response);
         }
