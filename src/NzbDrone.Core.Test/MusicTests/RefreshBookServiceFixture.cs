@@ -1,10 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
-using Moq;
+using FluentAssertions;
 using NUnit.Framework;
 using NzbDrone.Core.Books;
 using NzbDrone.Core.MetadataSource;
+using NzbDrone.Core.MetadataSource.BookInfo;
 using NzbDrone.Core.Test.Framework;
 
 namespace NzbDrone.Core.Test.MusicTests
@@ -62,10 +63,10 @@ namespace NzbDrone.Core.Test.MusicTests
 
             result.Should().NotBeNull();
             result.Should().BeSameAs(localAuthor);
-            result.Books.Should().HaveCount(1);
-            result.Books[0].AuthorMetadataId.Should().Be(localBook.AuthorMetadataId);
-            result.Books[0].Author.Should().BeSameAs(localAuthor);
-            result.Books[0].AuthorMetadata.Value.ForeignAuthorId.Should().Be(localAuthor.ForeignAuthorId);
+            result.Books.Value.Should().HaveCount(1);
+            result.Books.Value[0].AuthorMetadataId.Should().Be(localBook.AuthorMetadataId);
+            result.Books.Value[0].Author.Should().BeSameAs(localAuthor);
+            result.Books.Value[0].AuthorMetadata.Value.ForeignAuthorId.Should().Be(localAuthor.ForeignAuthorId);
         }
     }
 }
