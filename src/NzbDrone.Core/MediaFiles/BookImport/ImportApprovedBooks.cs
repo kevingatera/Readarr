@@ -516,14 +516,22 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                         return null;
                     }
 
-                    // Populate the new DB book
-                    foreach (var decision in decisions)
-                    {
-                        decision.Item.Edition = dbEdition;
-                    }
-
-                    edition = dbEdition;
                 }
+
+                if (dbEdition == null || dbEdition.BookId != book.Id)
+                {
+                    _logger.Warn("Unable to bind import edition {0} to book {1}", edition.ForeignEditionId, book);
+                    RejectBook(decisions);
+                    return null;
+                }
+
+                // Always swap the transient import edition for the persisted row before continuing.
+                foreach (var decision in decisions)
+                {
+                    decision.Item.Edition = dbEdition;
+                }
+
+                edition = dbEdition;
             }
 
             return edition;
