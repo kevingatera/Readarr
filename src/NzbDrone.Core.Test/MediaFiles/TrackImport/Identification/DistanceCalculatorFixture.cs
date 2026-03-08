@@ -179,5 +179,78 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
 
             dist.Reasons.Should().NotContain("book");
         }
+
+        [Test]
+        public void should_penalize_wrong_series_part_candidate_for_single_file_audiobook()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };
+
+            var correctBook = new Book
+            {
+                Title = "Gods & Legionnaires",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata),
+                SeriesLinks = new LazyLoaded<List<SeriesBookLink>>(new List<SeriesBookLink>
+                {
+                    new SeriesBookLink
+                    {
+                        Position = "2",
+                        SeriesPosition = 2,
+                        Series = new LazyLoaded<Series>(new Series { Title = "Galaxy's Edge: Savage Wars" })
+                    }
+                })
+            };
+
+            var wrongBook = new Book
+            {
+                Title = "Forget Nothing",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata),
+                SeriesLinks = new LazyLoaded<List<SeriesBookLink>>(new List<SeriesBookLink>
+                {
+                    new SeriesBookLink
+                    {
+                        Position = "0.6",
+                        SeriesPosition = 0.6,
+                        Series = new LazyLoaded<Series>(new Series { Title = "Galaxy's Edge" })
+                    }
+                })
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/02 Gods & Legionnaires/Savage Wars (Galaxy's Edge) Book 2 - Gods & Legionnaires.m4b",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "Gods & Legionnaires",
+                        BookTitle = "02 Gods & Legionnaires",
+                        Authors = new List<string>
+                        {
+                            "Galaxy's Edge (Savage Wars)",
+                            "Jason Anspach, Nick Cole"
+                        }
+                    }
+                }
+            };
+
+            var correctEdition = new Edition
+            {
+                Title = "Gods & Legionnaires",
+                Book = new LazyLoaded<Book>(correctBook)
+            };
+
+            var wrongEdition = new Edition
+            {
+                Title = "Forget Nothing",
+                Book = new LazyLoaded<Book>(wrongBook)
+            };
+
+            var correctDistance = DistanceCalculator.BookDistance(localTracks, correctEdition);
+            var wrongDistance = DistanceCalculator.BookDistance(localTracks, wrongEdition);
+
+            correctDistance.Reasons.Should().NotContain("series part");
+            wrongDistance.Reasons.Should().Contain("series part");
+            wrongDistance.NormalizedDistance().Should().BeGreaterThan(correctDistance.NormalizedDistance());
+        }
     }
 }
