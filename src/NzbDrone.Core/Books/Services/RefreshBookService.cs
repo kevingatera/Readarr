@@ -387,6 +387,11 @@ namespace NzbDrone.Core.Books
         {
             var data = GetSkyhookData(book);
 
+            if (data == null)
+            {
+                return false;
+            }
+
             return RefreshBookInfo(book, data.Books, data, false);
         }
 
