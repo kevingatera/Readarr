@@ -26,6 +26,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
         private static readonly RegexReplace CleanTitleCruft = new RegexReplace(@"\((?:unabridged)\)|,?\s*(?:\([^)]*edition[^)]*\)|(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)?)\s+edition)$", string.Empty, RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly RegexReplace LeadingPartNumber = new RegexReplace(@"^\s*(?:(?:book|part|pt|chapter|disc|cd|track)\s*)?(?:\d+|[ivxlcdm]+)\s*[-._:)]*\s+", string.Empty, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex SeriesPartRegex = new Regex(@"\b(?:book|part|pt)\s*(?<number>\d+(?:\.\d+)?|[ivxlcdm]+)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex LeadingPartRegex = new Regex(@"^\s*(?:(?:book|part|pt|chapter|disc|cd|track)\s*)?(?<number>\d+(?:\.\d+)?|[ivxlcdm]+)\s*[-._:)]*\s+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly List<string> EbookFormats = new List<string> { "Kindle Edition", "Nook", "ebook" };
 
@@ -74,6 +76,17 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
 
             dist.AddString("book", fileTitles, titleOptions);
             Logger.Trace("book: '{0}' vs '{1}'; {2}", fileTitles.ConcatToString("' or '"), titleOptions.ConcatToString("' or '"), dist.NormalizedDistance());
+
+            var localPartNumbers = ParsePartNumbers(fileTitles);
+            var editionPartNumbers = GetEditionPartNumbers(edition);
+            if (localPartNumbers.Any() && editionPartNumbers.Any())
+            {
+                dist.AddBool("series_part", !HasMatchingPartNumber(localPartNumbers, editionPartNumbers));
+                Logger.Trace("series_part: '{0}' vs '{1}'; {2}",
+                    localPartNumbers.Select(x => x.ToString("0.###", CultureInfo.InvariantCulture)).ConcatToString("' or '"),
+                    editionPartNumbers.Select(x => x.ToString("0.###", CultureInfo.InvariantCulture)).ConcatToString("' or '"),
+                    dist.NormalizedDistance());
+            }
 
             var isbn = localTracks.MostCommon(x => x.FileTrackInfo.Isbn);
             if (isbn.IsNotNullOrWhiteSpace() && edition.Isbn13.IsNotNullOrWhiteSpace())
@@ -329,6 +342,76 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             }
 
             return false;
+        }
+
+        private static List<double> ParsePartNumbers(IEnumerable<string> titles)
+        {
+            var partNumbers = new List<double>();
+
+            foreach (var title in titles.Where(x => x.IsNotNullOrWhiteSpace()))
+            {
+                var leadingMatch = LeadingPartRegex.Match(title);
+                if (leadingMatch.Success && TryParseSeriesNumber(leadingMatch.Groups["number"].Value, out var leadingPart))
+                {
+                    AddPartIfUnique(partNumbers, leadingPart);
+                }
+
+                foreach (Match match in SeriesPartRegex.Matches(title))
+                {
+                    if (TryParseSeriesNumber(match.Groups["number"].Value, out var partNumber))
+                    {
+                        AddPartIfUnique(partNumbers, partNumber);
+                    }
+                }
+            }
+
+            return partNumbers;
+        }
+
+        private static List<double> GetEditionPartNumbers(Edition edition)
+        {
+            var partNumbers = new List<double>();
+
+            if (!(edition.Book?.Value?.SeriesLinks?.Value?.Any() ?? false))
+            {
+                return partNumbers;
+            }
+
+            foreach (var seriesLink in edition.Book.Value.SeriesLinks.Value)
+            {
+                if (seriesLink.SeriesPosition > 0)
+                {
+                    AddPartIfUnique(partNumbers, seriesLink.SeriesPosition);
+                }
+
+                if (TryParseSeriesNumber(seriesLink.Position, out var parsedPosition))
+                {
+                    AddPartIfUnique(partNumbers, parsedPosition);
+                }
+            }
+
+            return partNumbers;
+        }
+
+        private static bool HasMatchingPartNumber(List<double> localPartNumbers, List<double> editionPartNumbers)
+        {
+            foreach (var localPartNumber in localPartNumbers)
+            {
+                if (editionPartNumbers.Any(x => Math.Abs(x - localPartNumber) < 0.01))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static void AddPartIfUnique(List<double> partNumbers, double value)
+        {
+            if (partNumbers.All(x => Math.Abs(x - value) > 0.01))
+            {
+                partNumbers.Add(value);
+            }
         }
 
         private static int RomanToInt(string value)
