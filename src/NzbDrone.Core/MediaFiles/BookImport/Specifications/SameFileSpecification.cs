@@ -1,5 +1,6 @@
 using System.Linq;
 using NLog;
+using NzbDrone.Common.Extensions;
 using NzbDrone.Core.DecisionEngine;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.Parser.Model;
@@ -37,6 +38,12 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Specifications
 
                 if (bookFile.Size == localBook.Size)
                 {
+                    if (localBook.AllowSameFileMatch && bookFile.Path.PathEquals(localBook.Path))
+                    {
+                        _logger.Debug("'{0}' Matches an existing file path and same-file remap is allowed", localBook.Path);
+                        continue;
+                    }
+
                     _logger.Debug("'{0}' Has the same filesize as existing file", localBook.Path);
                     return Decision.Reject("Has the same filesize as existing file");
                 }

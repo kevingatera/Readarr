@@ -40,6 +40,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport
         public bool NewDownload { get; set; }
         public bool SingleRelease { get; set; }
         public bool IncludeExisting { get; set; }
+        public bool AllowSameFileMatch { get; set; }
         public bool AddNewAuthors { get; set; }
         public bool KeepAllEditions { get; set; }
     }
@@ -152,7 +153,11 @@ namespace NzbDrone.Core.MediaFiles.BookImport
             var localTracks = trackData.Item1;
             var decisions = trackData.Item2;
 
-            localTracks.ForEach(x => x.ExistingFile = !config.NewDownload);
+            localTracks.ForEach(x =>
+            {
+                x.ExistingFile = !config.NewDownload;
+                x.AllowSameFileMatch = config.AllowSameFileMatch;
+            });
 
             var releases = _identificationService.Identify(localTracks, idOverrides, config);
 

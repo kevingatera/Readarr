@@ -25,6 +25,7 @@ namespace NzbDrone.Core.Parser.Model
         public QualityModel Quality { get; set; }
         public IndexerFlags IndexerFlags { get; set; }
         public bool ExistingFile { get; set; }
+        public bool AllowSameFileMatch { get; set; }
         public bool AdditionalFile { get; set; }
         public bool SceneSource { get; set; }
         public string ReleaseGroup { get; set; }
