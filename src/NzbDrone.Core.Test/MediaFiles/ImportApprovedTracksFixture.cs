@@ -110,6 +110,82 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
+        public void should_reuse_existing_persisted_edition_when_import_decision_has_transient_edition()
+        {
+            var persistedEdition = Builder<Edition>.CreateNew()
+                .With(x => x.Id = 12)
+                .With(x => x.BookId = _approvedDecisions.First().Item.Book.Id)
+                .With(x => x.ForeignEditionId = "existing-foreign-edition")
+                .With(x => x.Monitored = true)
+                .Build();
+
+            var transientEdition = Builder<Edition>.CreateNew()
+                .With(x => x.Id = 0)
+                .With(x => x.BookId = _approvedDecisions.First().Item.Book.Id)
+                .With(x => x.ForeignEditionId = persistedEdition.ForeignEditionId)
+                .With(x => x.Monitored = false)
+                .Build();
+
+            var decision = _approvedDecisions.First();
+            decision.Item.Edition = transientEdition;
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(s => s.GetEditionByForeignEditionId(persistedEdition.ForeignEditionId))
+                .Returns(persistedEdition);
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(s => s.SetMonitored(persistedEdition))
+                .Returns(new List<Edition> { persistedEdition });
+
+            Subject.Import(new List<ImportDecision<LocalBook>> { decision }, false);
+
+            decision.Item.Edition.Should().BeSameAs(persistedEdition);
+
+            Mocker.GetMock<IEditionService>()
+                .Verify(v => v.SetMonitored(persistedEdition), Times.Once());
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.AddMany(It.Is<List<BookFile>>(files => files.Single().EditionId == persistedEdition.Id)), Times.Once());
+        }
+
+        [Test]
+        public void should_reject_when_existing_persisted_edition_belongs_to_different_book()
+        {
+            var foreignEditionId = "cross-book-edition";
+            var transientEdition = Builder<Edition>.CreateNew()
+                .With(x => x.Id = 0)
+                .With(x => x.BookId = _approvedDecisions.First().Item.Book.Id)
+                .With(x => x.ForeignEditionId = foreignEditionId)
+                .With(x => x.Monitored = false)
+                .Build();
+
+            var wrongBookEdition = Builder<Edition>.CreateNew()
+                .With(x => x.Id = 77)
+                .With(x => x.BookId = _approvedDecisions.First().Item.Book.Id + 999)
+                .With(x => x.ForeignEditionId = foreignEditionId)
+                .With(x => x.Monitored = true)
+                .Build();
+
+            var decision = _approvedDecisions.First();
+            decision.Item.Edition = transientEdition;
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(s => s.GetEditionByForeignEditionId(foreignEditionId))
+                .Returns(wrongBookEdition);
+
+            var result = Subject.Import(new List<ImportDecision<LocalBook>> { decision }, false);
+
+            result.Should().ContainSingle();
+            result.Single().Result.Should().Be(ImportResultType.Rejected);
+
+            Mocker.GetMock<IEditionService>()
+                .Verify(v => v.SetMonitored(It.IsAny<Edition>()), Times.Never());
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.AddMany(It.IsAny<List<BookFile>>()), Times.Never());
+        }
+
+        [Test]
         public void should_only_import_approved()
         {
             var all = new List<ImportDecision<LocalBook>>();
