@@ -879,7 +879,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 Title = resource.Title,
                 TitleSlug = resource.ForeignId.ToString(),
                 CleanTitle = Parser.Parser.CleanAuthorName(resource.Title),
-                ReleaseDate = resource.ReleaseDate,
+                ReleaseDate = NormalizeDate(resource.ReleaseDate),
                 Genres = resource.Genres,
                 RelatedBooks = resource.RelatedWorks
             };
@@ -967,7 +967,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 Disambiguation = resource.EditionInformation,
                 Publisher = resource.Publisher,
                 PageCount = resource.NumPages ?? 0,
-                ReleaseDate = resource.ReleaseDate,
+                ReleaseDate = NormalizeDate(resource.ReleaseDate),
                 Ratings = new Ratings { Votes = resource.RatingCount, Value = (decimal)resource.AverageRating }
             };
 
@@ -988,6 +988,16 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         private static int GetAuthorId(WorkResource b)
         {
             return GetAuthorIds(b).FirstOrDefault();
+        }
+
+        private static DateTime? NormalizeDate(DateTime? value)
+        {
+            if (!value.HasValue || value.Value == default(DateTime))
+            {
+                return null;
+            }
+
+            return value;
         }
 
         private static Dictionary<string, AuthorMetadata> MergeAuthorMetadata(
