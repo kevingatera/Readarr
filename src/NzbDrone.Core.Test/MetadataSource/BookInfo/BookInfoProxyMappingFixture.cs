@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Reflection;
 using FluentAssertions;
@@ -129,6 +130,16 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
 
             merged.Should().ContainKey("1");
             merged["1"].Name.Should().Be("Primary Author");
+        }
+
+        [Test]
+        public void should_normalize_default_dates_to_null()
+        {
+            var normalized = InvokePrivateStatic<DateTime?>(
+                "NormalizeDate",
+                new DateTime?(default(DateTime)));
+
+            normalized.Should().BeNull();
         }
 
         private static T InvokePrivateStatic<T>(string methodName, params object[] args)
