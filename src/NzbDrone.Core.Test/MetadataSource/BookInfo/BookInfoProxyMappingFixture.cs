@@ -55,7 +55,7 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
             var author = InvokePrivateStatic<Author>("MapAuthor", resource);
 
             author.Should().NotBeNull();
-            author.Books.Should().HaveCount(1);
+            author.Books.Value.Should().HaveCount(1);
             author.Books.Value[0].ForeignBookId.Should().Be("10");
             author.Books.Value[0].Title.Should().Be("1812");
         }
