@@ -121,6 +121,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                     NewDownload = true,
                     SingleRelease = false,
                     IncludeExisting = !replaceExistingFiles,
+                    AllowSameFileMatch = replaceExistingFiles,
                     AddNewAuthors = false,
                     KeepAllEditions = true
                 };
@@ -167,6 +168,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 NewDownload = true,
                 SingleRelease = false,
                 IncludeExisting = !replaceExistingFiles,
+                AllowSameFileMatch = replaceExistingFiles,
                 AddNewAuthors = false,
                 KeepAllEditions = true
             };
@@ -214,6 +216,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                     NewDownload = true,
                     SingleRelease = true,
                     IncludeExisting = !replaceExistingFiles,
+                    AllowSameFileMatch = replaceExistingFiles,
                     AddNewAuthors = false
                 };
                 var decisions = _importDecisionMaker.GetImportDecisions(files, idOverride, null, config);
