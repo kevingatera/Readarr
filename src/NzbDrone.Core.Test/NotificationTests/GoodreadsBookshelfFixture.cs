@@ -4,15 +4,16 @@ using NUnit.Framework;
 using NzbDrone.Common.Http;
 using NzbDrone.Core.Books;
 using NzbDrone.Core.Datastore;
-using NzbDrone.Core.ImportLists.Goodreads;
 using NzbDrone.Core.Notifications;
-using NzbDrone.Core.Notifications.Goodreads;
 using NzbDrone.Core.Test.Framework;
+using GoodreadsAuthorizationHeader = NzbDrone.Core.ImportLists.Goodreads.AuthorizationHeader;
+using GoodreadsNotificationBookshelf = NzbDrone.Core.Notifications.Goodreads.GoodreadsBookshelf;
+using GoodreadsBookshelfNotificationSettings = NzbDrone.Core.Notifications.Goodreads.GoodreadsBookshelfNotificationSettings;
 
 namespace NzbDrone.Core.Test.NotificationTests
 {
     [TestFixture]
-    public class GoodreadsBookshelfFixture : CoreTest<GoodreadsBookshelf>
+    public class GoodreadsBookshelfFixture : CoreTest<GoodreadsNotificationBookshelf>
     {
         private int _pageOneRequests;
 
@@ -35,7 +36,7 @@ namespace NzbDrone.Core.Test.NotificationTests
             };
 
             Mocker.GetMock<IHttpClient>()
-                .Setup(c => c.Post<AuthorizationHeader>(It.IsAny<HttpRequest>()))
+                .Setup(c => c.Post<GoodreadsAuthorizationHeader>(It.IsAny<HttpRequest>()))
                 .Returns<HttpRequest>(request => AuthResponse(request));
 
             Mocker.GetMock<IHttpClient>()
@@ -70,7 +71,7 @@ namespace NzbDrone.Core.Test.NotificationTests
                 .Verify(c => c.Execute(It.Is<HttpRequest>(r => r.Url.Path.Contains("shelf/add_to_shelf.xml"))), Times.Once());
         }
 
-        private HttpResponse<AuthorizationHeader> AuthResponse(HttpRequest request)
+        private HttpResponse<GoodreadsAuthorizationHeader> AuthResponse(HttpRequest request)
         {
             var response = new HttpResponse(
                 request,
@@ -78,7 +79,7 @@ namespace NzbDrone.Core.Test.NotificationTests
                 "{\"authorization\":\"OAuth test\"}"
             );
 
-            return new HttpResponse<AuthorizationHeader>(response);
+            return new HttpResponse<GoodreadsAuthorizationHeader>(response);
         }
 
         private HttpResponse GoodreadsResponse(HttpRequest request)
