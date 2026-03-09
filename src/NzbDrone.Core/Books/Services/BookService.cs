@@ -14,6 +14,7 @@ namespace NzbDrone.Core.Books
     {
         Book GetBook(int bookId);
         List<Book> GetBooks(IEnumerable<int> bookIds);
+        List<Book> GetExistingBooks(IEnumerable<int> bookIds);
         List<Book> GetBooksByAuthor(int authorId);
         List<Book> GetNextBooksByAuthorMetadataId(IEnumerable<int> authorMetadataIds);
         List<Book> GetLastBooksByAuthorMetadataId(IEnumerable<int> authorMetadataIds);
@@ -185,6 +186,14 @@ namespace NzbDrone.Core.Books
         public List<Book> GetBooks(IEnumerable<int> bookIds)
         {
             return _bookRepository.Get(bookIds).ToList();
+        }
+
+        public List<Book> GetExistingBooks(IEnumerable<int> bookIds)
+        {
+            return bookIds.Distinct()
+                          .Select(_bookRepository.Find)
+                          .Where(book => book != null)
+                          .ToList();
         }
 
         public List<Book> GetBooksByAuthor(int authorId)
