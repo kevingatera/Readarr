@@ -294,7 +294,7 @@ namespace NzbDrone.Core.Books
                     )
                 ) e ON b.""Id"" = e.""BookId""
                 LEFT JOIN (
-                    SELECT sbl.""BookId"", s.""Title"" as SeriesTitle
+                    SELECT sbl.""BookId"", s.""Title"" as ""SeriesTitle""
                     FROM ""SeriesBookLink"" sbl
                     LEFT JOIN ""Series"" s ON sbl.""SeriesId"" = s.""Id""
                     INNER JOIN (
