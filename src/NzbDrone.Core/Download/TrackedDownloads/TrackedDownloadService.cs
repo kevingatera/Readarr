@@ -7,6 +7,7 @@ using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Serializer;
 using NzbDrone.Core.Books.Events;
 using NzbDrone.Core.CustomFormats;
+using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Download.History;
 using NzbDrone.Core.History;
 using NzbDrone.Core.Messaging.Events;
@@ -284,9 +285,34 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
         private void UpdateCachedItem(TrackedDownload trackedDownload)
         {
-            var parsedEpisodeInfo = Parser.Parser.ParseBookTitle(trackedDownload.DownloadItem.Title);
+            var parsedBookInfo = Parser.Parser.ParseBookTitle(trackedDownload.DownloadItem.Title);
+            var authorId = trackedDownload.RemoteBook?.Author?.Id ?? 0;
+            var bookIds = trackedDownload.RemoteBook?.Books?
+                .Select(book => book.Id)
+                .Where(id => id > 0)
+                .Distinct()
+                .ToArray() ?? Array.Empty<int>();
 
-            trackedDownload.RemoteBook = parsedEpisodeInfo == null ? null : _parsingService.Map(parsedEpisodeInfo, 0, new[] { 0 });
+            if (parsedBookInfo == null || authorId <= 0 || bookIds.Length == 0)
+            {
+                trackedDownload.RemoteBook = null;
+                return;
+            }
+
+            try
+            {
+                trackedDownload.RemoteBook = _parsingService.Map(parsedBookInfo, authorId, bookIds);
+            }
+            catch (ModelNotFoundException ex)
+            {
+                _logger.Debug(ex, "Clearing tracked download cache for '{0}' after referenced author or book was deleted", trackedDownload.DownloadItem.Title);
+                trackedDownload.RemoteBook = null;
+            }
+            catch (ApplicationException ex)
+            {
+                _logger.Debug(ex, "Clearing tracked download cache for '{0}' after tracked book mapping became stale", trackedDownload.DownloadItem.Title);
+                trackedDownload.RemoteBook = null;
+            }
         }
 
         private static TrackedDownloadState GetStateFromHistory(DownloadHistoryEventType eventType)

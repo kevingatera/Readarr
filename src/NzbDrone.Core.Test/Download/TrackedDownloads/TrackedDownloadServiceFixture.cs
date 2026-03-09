@@ -5,6 +5,7 @@ using Moq;
 using NUnit.Framework;
 using NzbDrone.Core.Books;
 using NzbDrone.Core.Books.Events;
+using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.Download.History;
 using NzbDrone.Core.Download.TrackedDownloads;
@@ -479,6 +480,57 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
                   .Returns(default(RemoteBook));
 
             Subject.Handle(new AuthorDeletedEvent(remoteEpisode.Author, true, true));
+
+            var trackedDownloads = Subject.GetTrackedDownloads();
+            trackedDownloads.Should().HaveCount(1);
+            trackedDownloads.First().RemoteBook.Should().BeNull();
+        }
+
+        [Test]
+        public void should_clear_cached_remote_book_when_author_deleted_mapping_throws_model_not_found()
+        {
+            GivenDownloadHistory();
+
+            var remoteBook = new RemoteBook
+            {
+                Author = new Author { Id = 5 },
+                Books = new List<Book> { new Book { Id = 4 } },
+                ParsedBookInfo = new ParsedBookInfo
+                {
+                    BookTitle = "Audio Book",
+                    AuthorName = "Audio Author"
+                }
+            };
+
+            Mocker.GetMock<IParsingService>()
+                  .Setup(s => s.Map(It.Is<ParsedBookInfo>(i => i.BookTitle == "Audio Book" && i.AuthorName == "Audio Author"), It.IsAny<int>(), It.IsAny<IEnumerable<int>>()))
+                  .Returns(remoteBook);
+
+            var client = new DownloadClientDefinition
+            {
+                Id = 1,
+                Protocol = DownloadProtocol.Torrent
+            };
+
+            var item = new DownloadClientItem
+            {
+                Title = "Audio Author - Audio Book [2018 - FLAC]",
+                DownloadId = "35238",
+                DownloadClientInfo = new DownloadClientItemClientInfo
+                {
+                    Protocol = client.Protocol,
+                    Id = client.Id,
+                    Name = client.Name
+                }
+            };
+
+            Subject.TrackDownload(client, item);
+
+            Mocker.GetMock<IParsingService>()
+                .Setup(s => s.Map(It.Is<ParsedBookInfo>(i => i.BookTitle == "Audio Book" && i.AuthorName == "Audio Author"), 5, It.Is<IEnumerable<int>>(ids => ids.Single() == 4)))
+                .Throws(new ModelNotFoundException(typeof(Author), 5));
+
+            Assert.DoesNotThrow(() => Subject.Handle(new AuthorDeletedEvent(remoteBook.Author, true, true)));
 
             var trackedDownloads = Subject.GetTrackedDownloads();
             trackedDownloads.Should().HaveCount(1);
