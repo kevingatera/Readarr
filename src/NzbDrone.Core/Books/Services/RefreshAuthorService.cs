@@ -104,6 +104,13 @@ namespace NzbDrone.Core.Books
 
             if (data != null)
             {
+                var localBooks = _bookService.GetBooksByAuthorMetadataId(local.AuthorMetadataId);
+                var fileCounts = _mediaFileService.GetFilesByAuthorMetadataId(local.AuthorMetadataId)
+                                                 .Where(x => x.Edition?.Value?.Book?.Value != null)
+                                                 .GroupBy(x => x.Edition.Value.Book.Value.Id)
+                                                 .ToDictionary(x => x.Key, x => x.Count());
+
+                EquivalentBookMergeHelper.CollapseEquivalentRemoteBooks(data, localBooks, fileCounts, _logger);
                 result.Entity = data;
                 result.Metadata = new List<AuthorMetadata> { data.Metadata.Value };
             }
@@ -243,9 +250,15 @@ namespace NzbDrone.Core.Books
 
         protected override Tuple<Book, List<Book>> GetMatchingExistingChildren(List<Book> existingChildren, Book remote)
         {
-            var existingChild = existingChildren.SingleOrDefault(x => x.ForeignBookId == remote.ForeignBookId);
-            var mergeChildren = new List<Book>();
-            return Tuple.Create(existingChild, mergeChildren);
+            var authorMetadataId = existingChildren.Select(x => x.AuthorMetadataId).FirstOrDefault(x => x != 0);
+            var fileCounts = authorMetadataId != 0
+                ? _mediaFileService.GetFilesByAuthorMetadataId(authorMetadataId)
+                                 .Where(x => x.Edition?.Value?.Book?.Value != null)
+                                 .GroupBy(x => x.Edition.Value.Book.Value.Id)
+                                 .ToDictionary(x => x.Key, x => x.Count())
+                : existingChildren.ToDictionary(x => x.Id, x => _mediaFileService.GetFilesByBook(x.Id).Count);
+
+            return EquivalentBookMergeHelper.FindMatchingLocalBook(existingChildren, remote, fileCounts);
         }
 
         protected override void PrepareNewChild(Book child, Author entity)
