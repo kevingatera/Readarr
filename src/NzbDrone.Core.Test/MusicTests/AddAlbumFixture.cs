@@ -106,5 +106,27 @@ namespace NzbDrone.Core.Test.MusicTests
 
             ExceptionVerification.ExpectedErrors(1);
         }
+
+        [Test]
+        public void should_be_able_to_add_a_book_with_only_foreign_edition_id()
+        {
+            var newBook = new Book
+            {
+                ForeignBookId = "book",
+                ForeignEditionId = "edition",
+                AuthorMetadata = new AuthorMetadata
+                {
+                    ForeignAuthorId = "author"
+                }
+            };
+
+            GivenValidBook("book", "edition");
+            GivenValidPath();
+
+            var book = Subject.AddBook(newBook);
+
+            book.Title.Should().Be(_fakeBook.Title);
+            book.Editions.Value.Single(x => x.Monitored).ForeignEditionId.Should().Be("edition");
+        }
     }
 }
