@@ -103,7 +103,16 @@ namespace NzbDrone.Core.Books
 
         private Book AddSkyhookData(Book newBook)
         {
-            var editionId = newBook.Editions.Value.Single(x => x.Monitored).ForeignEditionId;
+            var editionId = newBook.Editions?.Value?.SingleOrDefault(x => x.Monitored)?.ForeignEditionId
+                            ?? newBook.ForeignEditionId;
+
+            if (string.IsNullOrWhiteSpace(editionId))
+            {
+                throw new ValidationException(new List<ValidationFailure>
+                                              {
+                                                  new ValidationFailure("ForeignEditionId", "A monitored edition is required", newBook.ForeignBookId)
+                                              });
+            }
 
             Tuple<string, Book, List<AuthorMetadata>> tuple = null;
             try
