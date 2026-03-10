@@ -103,7 +103,7 @@ namespace Readarr.Api.V1.Books
                 Title = resource.Title,
                 Monitored = resource.Monitored,
                 AnyEditionOk = resource.AnyEditionOk,
-                Editions = resource.Editions.ToModel(),
+                Editions = resource.Editions?.ToModel() ?? new List<Edition>(),
                 AddOptions = resource.AddOptions,
                 Author = author,
                 AuthorMetadata = author.Metadata.Value
