@@ -1,7 +1,7 @@
 using System;
 using System.IO;
-using FluentAssertions;
 using FizzWare.NBuilder;
+using FluentAssertions;
 using Moq;
 using NUnit.Framework;
 using NzbDrone.Common.Disk;
