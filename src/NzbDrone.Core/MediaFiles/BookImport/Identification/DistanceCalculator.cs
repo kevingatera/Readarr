@@ -17,8 +17,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
 {
     public static class DistanceCalculator
     {
-        private static readonly Logger Logger = NzbDroneLogger.GetLogger(typeof(DistanceCalculator));
         private const double IgnoreFormatPenaltyThreshold = 0.20;
+        private static readonly Logger Logger = NzbDroneLogger.GetLogger(typeof(DistanceCalculator));
 
         public static readonly List<string> VariousAuthorIds = new List<string> { "89ad4ac3-39f7-470e-963a-56509c546377" };
 
