@@ -288,6 +288,151 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
+        public void should_use_identification_overrides_for_single_file_manual_import()
+        {
+            NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides capturedOverride = null;
+            var matchedBook = Builder<Book>.CreateNew()
+                .With(x => x.Id = 4617)
+                .With(x => x.Title = "Callsign: Valkyrie")
+                .With(x => x.Author = _author)
+                .Build();
+            var wrongBook = Builder<Book>.CreateNew()
+                .With(x => x.Id = 113)
+                .With(x => x.Title = "Kill Team")
+                .With(x => x.Author = _author)
+                .Build();
+            var matchedEdition = Builder<Edition>.CreateNew()
+                .With(x => x.Id = 46170)
+                .With(x => x.Title = "Callsign: Valkyrie")
+                .With(x => x.BookId = matchedBook.Id)
+                .With(x => x.Book = matchedBook)
+                .Build();
+
+            Mocker.GetMock<IDiskProvider>()
+                .Setup(x => x.FolderExists(_filePath))
+                .Returns(false);
+
+            Mocker.GetMock<IDiskProvider>()
+                .Setup(x => x.FileExists(_filePath))
+                .Returns(true);
+
+            Mocker.GetMock<IMetadataTagService>()
+                .Setup(x => x.ReadTags(_fileInfo))
+                .Returns(new ParsedTrackInfo
+                {
+                    Title = "Callsign Valkyrie: Order of the Centurion, Book 6 (Unabridged)",
+                    BookTitle = "Callsign Valkyrie: Order of the Centurion, Book 6 (Unabridged)"
+                });
+
+            Mocker.GetMock<IBookService>()
+                .Setup(x => x.GetBooksByAuthorMetadataId(_author.AuthorMetadataId))
+                .Returns(new List<Book> { matchedBook, wrongBook });
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(x => x.GetEditionsByBook(matchedBook.Id))
+                .Returns(new List<Edition> { matchedEdition });
+
+            Mocker.GetMock<IMakeImportDecision>()
+                .Setup(x => x.GetImportDecisions(It.IsAny<List<IFileInfo>>(),
+                                                It.IsAny<NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides>(),
+                                                It.IsAny<ImportDecisionMakerInfo>(),
+                                                It.IsAny<ImportDecisionMakerConfig>()))
+                .Callback<List<IFileInfo>, NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((_, id, _, _) => capturedOverride = id)
+                .Returns(new List<ImportDecision<LocalBook>>
+                {
+                    new ImportDecision<LocalBook>(new LocalBook
+                    {
+                        Path = _filePath,
+                        Author = _author,
+                        Book = matchedBook,
+                        Edition = matchedEdition,
+                        Quality = new QualityModel(Quality.M4B),
+                        FileTrackInfo = new ParsedTrackInfo()
+                    })
+                });
+
+            var result = Subject.GetMediaFiles(_filePath, null, _author, FilterFilesType.None, false);
+
+            result.Should().HaveCount(1);
+            capturedOverride.Should().NotBeNull();
+            capturedOverride.Book.Should().Be(matchedBook);
+            capturedOverride.Edition.Should().Be(matchedEdition);
+        }
+
+        [Test]
+        public void should_prefer_longer_exact_title_over_series_base_title_for_folder_override()
+        {
+            var folder = Path.GetDirectoryName(_filePath);
+            NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides capturedOverride = null;
+
+            var matchedBook = Builder<Book>.CreateNew()
+                .With(x => x.Id = 15407)
+                .With(x => x.Title = "Tournament of Champions")
+                .With(x => x.Author = _author)
+                .Build();
+            var wrongBook = Builder<Book>.CreateNew()
+                .With(x => x.Id = 515)
+                .With(x => x.Title = "King's League")
+                .With(x => x.Author = _author)
+                .Build();
+            var matchedEdition = Builder<Edition>.CreateNew()
+                .With(x => x.Id = 154070)
+                .With(x => x.Title = "Tournament of Champions")
+                .With(x => x.BookId = matchedBook.Id)
+                .With(x => x.Book = matchedBook)
+                .Build();
+
+            Mocker.GetMock<IDiskProvider>()
+                .Setup(x => x.FolderExists(folder))
+                .Returns(true);
+
+            Mocker.GetMock<IDiskScanService>()
+                .Setup(x => x.GetBookFiles(folder, true))
+                .Returns(new[] { _fileInfo });
+
+            Mocker.GetMock<IMetadataTagService>()
+                .Setup(x => x.ReadTags(_fileInfo))
+                .Returns(new ParsedTrackInfo
+                {
+                    BookTitle = "Tournament of Champions: An Epic Lit RPG Adventure (King's League, Book 6)"
+                });
+
+            Mocker.GetMock<IBookService>()
+                .Setup(x => x.GetBooksByAuthorMetadataId(_author.AuthorMetadataId))
+                .Returns(new List<Book> { matchedBook, wrongBook });
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(x => x.GetEditionsByBook(matchedBook.Id))
+                .Returns(new List<Edition> { matchedEdition });
+
+            Mocker.GetMock<IMakeImportDecision>()
+                .Setup(x => x.GetImportDecisions(It.IsAny<List<IFileInfo>>(),
+                                                It.IsAny<NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides>(),
+                                                It.IsAny<ImportDecisionMakerInfo>(),
+                                                It.IsAny<ImportDecisionMakerConfig>()))
+                .Callback<List<IFileInfo>, NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((_, id, _, _) => capturedOverride = id)
+                .Returns(new List<ImportDecision<LocalBook>>
+                {
+                    new ImportDecision<LocalBook>(new LocalBook
+                    {
+                        Path = _filePath,
+                        Author = _author,
+                        Book = matchedBook,
+                        Edition = matchedEdition,
+                        Quality = new QualityModel(Quality.M4B),
+                        FileTrackInfo = new ParsedTrackInfo()
+                    })
+                });
+
+            var result = Subject.GetMediaFiles(folder, null, _author, FilterFilesType.None, false);
+
+            result.Should().HaveCount(1);
+            capturedOverride.Should().NotBeNull();
+            capturedOverride.Book.Should().Be(matchedBook);
+            capturedOverride.Edition.Should().Be(matchedEdition);
+        }
+
+        [Test]
         public void should_complete_tracked_import_when_import_item_is_missing()
         {
             var trackedDownload = new TrackedDownload
