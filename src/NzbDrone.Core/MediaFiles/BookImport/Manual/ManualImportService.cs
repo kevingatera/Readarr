@@ -153,15 +153,12 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
             }
 
             var authorFiles = _diskScanService.GetBookFiles(folder).ToList();
-            var idOverrides = new IdentificationOverrides
-            {
-                Author = author
-            };
             var itemInfo = new ImportDecisionMakerInfo
             {
                 DownloadClientItem = downloadClientItem,
                 ParsedBookInfo = Parser.Parser.ParseBookTitle(directoryInfo.Name)
             };
+            var idOverrides = ResolveIdentificationOverrides(author, authorFiles, itemInfo);
             var config = new ImportDecisionMakerConfig
             {
                 Filter = filter,
@@ -187,6 +184,121 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
             var existingItems = existingDecisions.Select(x => MapItem(x, null, replaceExistingFiles, false));
 
             return newItems.Concat(existingItems).ToList();
+        }
+
+        private IdentificationOverrides ResolveIdentificationOverrides(Author author, List<IFileInfo> authorFiles, ImportDecisionMakerInfo itemInfo)
+        {
+            var idOverrides = new IdentificationOverrides
+            {
+                Author = author
+            };
+
+            if (author?.AuthorMetadataId <= 0 || !authorFiles.Any())
+            {
+                return idOverrides;
+            }
+
+            var embeddedTracks = authorFiles
+                .Select(file => _metadataTagService.ReadTags(file))
+                .Where(track => track != null)
+                .ToList();
+
+            var distinctEmbeddedTitles = embeddedTracks
+                .SelectMany(track => new[] { track.BookTitle, track.Title })
+                .Where(title => title.IsNotNullOrWhiteSpace())
+                .Select(CanonicalizeTitle)
+                .Where(title => title.IsNotNullOrWhiteSpace())
+                .Distinct(StringComparer.InvariantCultureIgnoreCase)
+                .ToList();
+
+            // Only apply a direct override when the embedded tags consistently describe one book.
+            if (distinctEmbeddedTitles.Count > 2)
+            {
+                return idOverrides;
+            }
+
+            foreach (var candidate in GetTitleCandidates(embeddedTracks, itemInfo?.ParsedBookInfo))
+            {
+                var book = _bookService.FindByTitle(author.AuthorMetadataId, candidate) ??
+                           _bookService.FindByTitleInexact(author.AuthorMetadataId, candidate);
+
+                if (book == null)
+                {
+                    continue;
+                }
+
+                idOverrides.Book = book;
+
+                var edition = _editionService.FindByTitle(author.AuthorMetadataId, candidate) ??
+                              _editionService.FindByTitleInexact(author.AuthorMetadataId, candidate);
+
+                if (edition?.BookId == book.Id)
+                {
+                    idOverrides.Edition = edition;
+                }
+
+                _logger.Debug("Manual import resolved book override for '{0}' to '{1}'", candidate, book.Title);
+                return idOverrides;
+            }
+
+            return idOverrides;
+        }
+
+        private static List<string> GetTitleCandidates(List<ParsedTrackInfo> embeddedTracks, ParsedBookInfo parsedBookInfo)
+        {
+            var candidates = new List<string>();
+
+            void Add(string value)
+            {
+                if (value.IsNullOrWhiteSpace())
+                {
+                    return;
+                }
+
+                foreach (var variant in ExpandTitleCandidates(value))
+                {
+                    if (!candidates.Any(x => x.Equals(variant, StringComparison.InvariantCultureIgnoreCase)))
+                    {
+                        candidates.Add(variant);
+                    }
+                }
+            }
+
+            Add(embeddedTracks.MostCommon(x => x.BookTitle));
+            Add(embeddedTracks.MostCommon(x => x.Title));
+            Add(parsedBookInfo?.BookTitle);
+
+            return candidates;
+        }
+
+        private static IEnumerable<string> ExpandTitleCandidates(string title)
+        {
+            if (title.IsNullOrWhiteSpace())
+            {
+                yield break;
+            }
+
+            foreach (var candidate in new[]
+                     {
+                         title,
+                         Parser.Parser.ParseBookTitle(title)?.BookTitle,
+                         title.RemoveBracketsAndContents(),
+                         title.RemoveAfterDash()
+                     }
+                     .Where(x => x.IsNotNullOrWhiteSpace())
+                     .Select(CanonicalizeTitle)
+                     .Where(x => x.IsNotNullOrWhiteSpace())
+                     .Distinct(StringComparer.InvariantCultureIgnoreCase))
+            {
+                yield return candidate;
+            }
+        }
+
+        private static string CanonicalizeTitle(string title)
+        {
+            return title?
+                .Trim(' ', '-', '_', '.', ',', ':', ';')
+                .Replace("  ", " ");
         }
 
         public List<ManualImportItem> UpdateItems(List<ManualImportItem> items)
