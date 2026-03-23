@@ -36,6 +36,7 @@ namespace NzbDrone.Core.MediaFiles
         private readonly IMakeImportDecision _importDecisionMaker;
         private readonly IImportApprovedBooks _importApprovedTracks;
         private readonly IHistoryService _historyService;
+        private readonly IMetadataTagService _metadataTagService;
         private readonly IEventAggregator _eventAggregator;
         private readonly IRuntimeInfo _runtimeInfo;
         private readonly Logger _logger;
@@ -48,6 +49,7 @@ namespace NzbDrone.Core.MediaFiles
                                              IMakeImportDecision importDecisionMaker,
                                              IImportApprovedBooks importApprovedTracks,
                                              IHistoryService historyService,
+                                             IMetadataTagService metadataTagService,
                                              IEventAggregator eventAggregator,
                                              IRuntimeInfo runtimeInfo,
                                              Logger logger)
@@ -60,6 +62,7 @@ namespace NzbDrone.Core.MediaFiles
             _importDecisionMaker = importDecisionMaker;
             _importApprovedTracks = importApprovedTracks;
             _historyService = historyService;
+            _metadataTagService = metadataTagService;
             _eventAggregator = eventAggregator;
             _runtimeInfo = runtimeInfo;
             _logger = logger;
@@ -220,7 +223,7 @@ namespace NzbDrone.Core.MediaFiles
                 Author = author
             };
 
-            var historyBookOverride = GetHistoryBookOverride(downloadClientItem, new[] { folderInfo?.BookTitle, directoryInfo.Name });
+            var historyBookOverride = GetHistoryBookOverride(downloadClientItem, new[] { folderInfo?.BookTitle, directoryInfo.Name }.Concat(GetEmbeddedTitleHints(audioFiles)));
 
             if (historyBookOverride != null)
             {
@@ -314,7 +317,7 @@ namespace NzbDrone.Core.MediaFiles
                 Author = author
             };
 
-            var historyBookOverride = GetHistoryBookOverride(downloadClientItem, new[] { Path.GetFileNameWithoutExtension(fileInfo.Name) });
+            var historyBookOverride = GetHistoryBookOverride(downloadClientItem, new[] { Path.GetFileNameWithoutExtension(fileInfo.Name) }.Concat(GetEmbeddedTitleHints(new[] { fileInfo })));
 
             if (historyBookOverride != null)
             {
@@ -338,6 +341,34 @@ namespace NzbDrone.Core.MediaFiles
             var decisions = _importDecisionMaker.GetImportDecisions(new List<IFileInfo>() { fileInfo }, idOverrides, idInfo, idConfig);
 
             return _importApprovedTracks.Import(decisions, true, downloadClientItem, importMode);
+        }
+
+        private IEnumerable<string> GetEmbeddedTitleHints(IEnumerable<IFileInfo> files)
+        {
+            foreach (var file in files ?? Enumerable.Empty<IFileInfo>())
+            {
+                ParsedTrackInfo tags;
+
+                try
+                {
+                    tags = _metadataTagService.ReadTags(file);
+                }
+                catch (Exception e)
+                {
+                    _logger.Debug(e, "Unable to read embedded tags for {0}", file?.FullName);
+                    continue;
+                }
+
+                if (tags?.BookTitle.IsNotNullOrWhiteSpace() ?? false)
+                {
+                    yield return tags.BookTitle;
+                }
+
+                if (tags?.Title.IsNotNullOrWhiteSpace() ?? false)
+                {
+                    yield return tags.Title;
+                }
+            }
         }
 
         private string GetCleanedUpFolderName(string folder)
