@@ -129,5 +129,20 @@ namespace NzbDrone.Core.Test.MusicTests
             book.Title.Should().Be(_fakeBook.Title);
             book.Editions.Value.Single(x => x.Monitored).ForeignEditionId.Should().Be("edition");
         }
+
+        [Test]
+        public void should_default_add_options_when_missing()
+        {
+            var newBook = BookToAdd("edition", "book", "author");
+            newBook.AddOptions = null;
+
+            GivenValidBook("book", "edition");
+            GivenValidPath();
+
+            var book = Subject.AddBook(newBook);
+
+            book.AddOptions.Should().NotBeNull();
+            book.AddOptions.AddType.Should().Be(BookAddType.Manual);
+        }
     }
 }
