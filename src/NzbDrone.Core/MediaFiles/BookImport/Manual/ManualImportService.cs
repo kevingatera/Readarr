@@ -374,9 +374,21 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 else
                 {
                     var trackedDownload = _trackedDownloadService.Find(downloadId);
-                    var importResults = _importApprovedBooks.Import(bookImportDecisions, message.ReplaceExistingFiles, trackedDownload.DownloadItem, message.ImportMode);
+                    var downloadClientItem = trackedDownload?.DownloadItem;
+
+                    if (downloadClientItem == null)
+                    {
+                        _logger.Warn("Tracked download {0} was not available during manual import, importing without tracked download context", downloadId);
+                    }
+
+                    var importResults = _importApprovedBooks.Import(bookImportDecisions, message.ReplaceExistingFiles, downloadClientItem, message.ImportMode);
 
                     imported.AddRange(importResults);
+
+                    if (downloadClientItem == null)
+                    {
+                        continue;
+                    }
 
                     foreach (var importResult in importResults)
                     {
@@ -394,14 +406,18 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
             foreach (var groupedTrackedDownload in importedTrackedDownload.GroupBy(i => i.TrackedDownload.DownloadItem.DownloadId).ToList())
             {
                 var trackedDownload = groupedTrackedDownload.First().TrackedDownload;
-                var outputPath = trackedDownload.ImportItem.OutputPath.FullPath;
 
-                if (_diskProvider.FolderExists(outputPath))
+                if (trackedDownload.ImportItem != null && !trackedDownload.ImportItem.OutputPath.IsEmpty)
                 {
-                    if (_downloadedTracksImportService.ShouldDeleteFolder(_diskProvider.GetDirectoryInfo(outputPath)) &&
-                        trackedDownload.DownloadItem.CanMoveFiles)
+                    var outputPath = trackedDownload.ImportItem.OutputPath.FullPath;
+
+                    if (_diskProvider.FolderExists(outputPath))
                     {
-                        _diskProvider.DeleteFolder(outputPath, true);
+                        if (_downloadedTracksImportService.ShouldDeleteFolder(_diskProvider.GetDirectoryInfo(outputPath)) &&
+                            trackedDownload.DownloadItem.CanMoveFiles)
+                        {
+                            _diskProvider.DeleteFolder(outputPath, true);
+                        }
                     }
                 }
 
@@ -413,7 +429,14 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 if (allItemsImported)
                 {
                     trackedDownload.State = TrackedDownloadState.Imported;
-                    _eventAggregator.PublishEvent(new DownloadCompletedEvent(trackedDownload, imported.First().ImportDecision.Item.Author.Id));
+                    var authorId = groupedTrackedDownload
+                        .Select(c => c.ImportResult.ImportDecision.Item.Author?.Id ?? 0)
+                        .FirstOrDefault(id => id > 0);
+
+                    if (authorId > 0)
+                    {
+                        _eventAggregator.PublishEvent(new DownloadCompletedEvent(trackedDownload, authorId));
+                    }
                 }
             }
         }
