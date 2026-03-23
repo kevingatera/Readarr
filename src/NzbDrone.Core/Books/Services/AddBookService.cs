@@ -44,6 +44,7 @@ namespace NzbDrone.Core.Books
         {
             _logger.Debug($"Adding book {book}");
 
+            book.AddOptions ??= new AddBookOptions();
             book = AddSkyhookData(book);
 
             // we allow adding extra editions, so check if the book already exists
