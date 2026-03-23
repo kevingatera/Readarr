@@ -40,11 +40,14 @@ namespace NzbDrone.Core.Test.MediaFiles
 
             _author = Builder<Author>.CreateNew()
                 .With(x => x.Id = 14)
+                .With(x => x.AuthorMetadataId = 14)
+                .With(x => x.AuthorName = "Jason Anspach")
                 .With(x => x.Path = @"C:\Audiobooks\Jason Anspach".AsOsAgnostic())
                 .Build();
 
             _book = Builder<Book>.CreateNew()
                 .With(x => x.Id = 15402)
+                .With(x => x.Title = "Takeover")
                 .With(x => x.Author = _author)
                 .With(x => x.ForeignBookId = "book-15402")
                 .Build();
@@ -209,6 +212,80 @@ namespace NzbDrone.Core.Test.MediaFiles
 
             Mocker.GetMock<IEventAggregator>()
                 .Verify(x => x.PublishEvent(It.IsAny<DownloadCompletedEvent>()), Times.Never());
+        }
+
+        [Test]
+        public void should_resolve_book_override_from_normalized_embedded_title_variants_for_folder_import()
+        {
+            var folder = Path.GetDirectoryName(_filePath);
+            var matchedBook = Builder<Book>.CreateNew()
+                .With(x => x.Id = 8393)
+                .With(x => x.Title = "Mavericks")
+                .With(x => x.Author = _author)
+                .Build();
+            var otherBook = Builder<Book>.CreateNew()
+                .With(x => x.Id = 8384)
+                .With(x => x.Title = "Zero Hour")
+                .With(x => x.Author = _author)
+                .Build();
+            var matchedEdition = Builder<Edition>.CreateNew()
+                .With(x => x.Id = 83930)
+                .With(x => x.Title = "Mavericks")
+                .With(x => x.BookId = matchedBook.Id)
+                .With(x => x.Book = matchedBook)
+                .Build();
+
+            NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides capturedOverride = null;
+
+            Mocker.GetMock<IDiskProvider>()
+                .Setup(x => x.FolderExists(folder))
+                .Returns(true);
+
+            Mocker.GetMock<IDiskScanService>()
+                .Setup(x => x.GetBookFiles(folder, true))
+                .Returns(new[] { _fileInfo });
+
+            Mocker.GetMock<IMetadataTagService>()
+                .Setup(x => x.ReadTags(_fileInfo))
+                .Returns(new ParsedTrackInfo
+                {
+                    Title = "Mavericks: Expeditionary Force, Book 6 (Unabridged)",
+                    BookTitle = "Mavericks (Unabridged)"
+                });
+
+            Mocker.GetMock<IBookService>()
+                .Setup(x => x.GetBooksByAuthorMetadataId(_author.AuthorMetadataId))
+                .Returns(new List<Book> { matchedBook, otherBook });
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(x => x.GetEditionsByBook(matchedBook.Id))
+                .Returns(new List<Edition> { matchedEdition });
+
+            Mocker.GetMock<IMakeImportDecision>()
+                .Setup(x => x.GetImportDecisions(It.IsAny<List<IFileInfo>>(),
+                                                It.IsAny<NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides>(),
+                                                It.IsAny<ImportDecisionMakerInfo>(),
+                                                It.IsAny<ImportDecisionMakerConfig>()))
+                .Callback<List<IFileInfo>, NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((_, id, _, _) => capturedOverride = id)
+                .Returns(new List<ImportDecision<LocalBook>>
+                {
+                    new ImportDecision<LocalBook>(new LocalBook
+                    {
+                        Path = _filePath,
+                        Author = _author,
+                        Book = matchedBook,
+                        Edition = matchedEdition,
+                        Quality = new QualityModel(Quality.M4B),
+                        FileTrackInfo = new ParsedTrackInfo()
+                    })
+                });
+
+            var result = Subject.GetMediaFiles(folder, null, _author, FilterFilesType.None, false);
+
+            result.Should().HaveCount(1);
+            capturedOverride.Should().NotBeNull();
+            capturedOverride.Book.Should().Be(matchedBook);
+            capturedOverride.Edition.Should().Be(matchedEdition);
         }
 
         [Test]
