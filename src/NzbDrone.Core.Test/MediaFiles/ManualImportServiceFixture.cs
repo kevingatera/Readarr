@@ -14,8 +14,6 @@ using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MediaFiles.BookImport;
 using NzbDrone.Core.MediaFiles.BookImport.Manual;
-using NzbDrone.Core.Messaging.Commands;
-using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.Parser.Model;
 using NzbDrone.Core.Qualities;
 using NzbDrone.Core.RootFolders;
@@ -96,7 +94,7 @@ namespace NzbDrone.Core.Test.MediaFiles
 
             Mocker.GetMock<IImportApprovedBooks>()
                 .Setup(x => x.Import(It.IsAny<List<ImportDecision<LocalBook>>>(), It.IsAny<bool>(), It.IsAny<DownloadClientItem>(), It.IsAny<ImportMode>()))
-                .Returns((List<ImportDecision<LocalBook>> decisions, bool _, DownloadClientItem __, ImportMode ___) =>
+                .Returns((List<ImportDecision<LocalBook>> decisions, bool replaceExisting, DownloadClientItem downloadClientItem, ImportMode importMode) =>
                     decisions.Select(d => new ImportResult(d)).ToList());
         }
 
