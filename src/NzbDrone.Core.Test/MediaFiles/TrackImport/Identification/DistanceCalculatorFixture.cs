@@ -251,5 +251,98 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
             wrongDistance.Reasons.Should().Contain("series part");
             wrongDistance.NormalizedDistance().Should().BeGreaterThan(correctDistance.NormalizedDistance());
         }
+
+        [Test]
+        public void should_ignore_ebook_format_penalties_for_close_audiobook_match()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };
+
+            var book = new Book
+            {
+                Title = "Hit & Fade",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata),
+                SeriesLinks = new LazyLoaded<List<SeriesBookLink>>(new List<SeriesBookLink>
+                {
+                    new SeriesBookLink
+                    {
+                        Position = "2",
+                        Series = new LazyLoaded<Series>(new Series { Title = "Forgotten Ruin" })
+                    }
+                })
+            };
+
+            var edition = new Edition
+            {
+                Title = "Hit & Fade",
+                Format = "Kindle Edition",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/Forgotten Ruin Book 2 - Hit & Fade.m4b",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "Hit & Fade",
+                        BookTitle = "Forgotten Ruin Book 2 - Hit & Fade",
+                        Authors = new List<string> { "Nick Cole, Jason Anspach" }
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().NotContain("wrong format");
+            dist.Reasons.Should().NotContain("audio format");
+            dist.NormalizedDistance().Should().BeLessThan(0.20);
+        }
+
+        [Test]
+        public void should_keep_ebook_format_penalties_for_wrong_audiobook_candidate()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };
+
+            var book = new Book
+            {
+                Title = "Gods & Legionnaires",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata),
+                SeriesLinks = new LazyLoaded<List<SeriesBookLink>>(new List<SeriesBookLink>
+                {
+                    new SeriesBookLink
+                    {
+                        Position = "2",
+                        Series = new LazyLoaded<Series>(new Series { Title = "Galaxy's Edge: Savage Wars" })
+                    }
+                })
+            };
+
+            var edition = new Edition
+            {
+                Title = "Gods & Legionnaires",
+                Format = "Kindle Edition",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/Forgotten Ruin Book 2 - Hit & Fade.m4b",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "Hit & Fade",
+                        BookTitle = "Forgotten Ruin Book 2 - Hit & Fade",
+                        Authors = new List<string> { "Nick Cole, Jason Anspach" }
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().Contain("wrong format");
+            dist.NormalizedDistance().Should().BeGreaterThan(0.20);
+        }
     }
 }
