@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using FluentAssertions;
 using FizzWare.NBuilder;
 using Moq;
 using NUnit.Framework;
@@ -118,6 +119,30 @@ namespace NzbDrone.Core.Test.MediaFiles.TrackFileMovingServiceTests
             Mocker.GetMock<IEventAggregator>()
                   .Verify(s => s.PublishEvent<TrackFolderCreatedEvent>(It.Is<TrackFolderCreatedEvent>(p =>
                       p.AuthorFolder.IsNotNullOrWhiteSpace())), Times.Never());
+        }
+
+        [Test]
+        public void should_adopt_existing_destination_when_destination_file_is_untracked()
+        {
+            var destinationPath = @"C:\Test\Music\Author\Book\File Name.mp3".AsOsAgnostic();
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Setup(s => s.FileExists(destinationPath))
+                  .Returns(true);
+
+            Mocker.GetMock<IMediaFileService>()
+                  .Setup(s => s.GetFileWithPath(destinationPath))
+                  .Returns((BookFile)null);
+
+            var result = Subject.MoveBookFile(_trackFile, _localtrack);
+
+            result.Path.Should().Be(destinationPath);
+
+            Mocker.GetMock<IDiskTransferService>()
+                  .Verify(v => v.TransferFile(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TransferMode>(), It.IsAny<bool>()), Times.Never());
+
+            Mocker.GetMock<IUpdateBookFileService>()
+                  .Verify(v => v.ChangeFileDateForFile(result, _author, _localtrack.Book), Times.Once());
         }
     }
 }
