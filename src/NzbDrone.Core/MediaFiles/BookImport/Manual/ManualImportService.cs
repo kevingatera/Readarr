@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Abstractions;
 using System.Linq;
+using System.Text.RegularExpressions;
 using NLog;
 using NzbDrone.Common;
 using NzbDrone.Common.Crypto;
@@ -32,6 +33,10 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
 
     public class ManualImportService : IExecute<ManualImportCommand>, IManualImportService
     {
+        private static readonly Regex LeadingPartRegex = new Regex(@"^\s*(?:(?:book|part|pt|chapter|disc|cd|track)\s*)?(?<number>\d+(?:\.\d+)?|[ivxlcdm]+)\s*[-._:)]*\s+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex RemoveSeriesPartRegex = new Regex(@"\b(?:book|part|pt)\s*(?:\d+(?:\.\d+)?|[ivxlcdm]+)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex CollapseWhitespaceRegex = new Regex(@"\s{2,}", RegexOptions.Compiled);
+
         private readonly IDiskProvider _diskProvider;
         private readonly IParsingService _parsingService;
         private readonly IRootFolderService _rootFolderService;
@@ -217,31 +222,119 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 return idOverrides;
             }
 
-            foreach (var candidate in GetTitleCandidates(embeddedTracks, itemInfo?.ParsedBookInfo))
+            var titleCandidates = GetTitleCandidates(embeddedTracks, itemInfo?.ParsedBookInfo);
+            var book = ResolveBookOverride(author, titleCandidates);
+            if (book == null)
+            {
+                return idOverrides;
+            }
+
+            idOverrides.Book = book;
+
+            var edition = ResolveEditionOverride(author, book, titleCandidates);
+            if (edition != null)
+            {
+                idOverrides.Edition = edition;
+            }
+
+            _logger.Debug("Manual import resolved book override to '{0}'", book.Title);
+            return idOverrides;
+        }
+
+        private Book ResolveBookOverride(Author author, List<string> titleCandidates)
+        {
+            if (author?.AuthorMetadataId <= 0 || !titleCandidates.Any())
+            {
+                return null;
+            }
+
+            var authorBooks = _bookService.GetBooksByAuthorMetadataId(author.AuthorMetadataId) ?? new List<Book>();
+            var directMatches = authorBooks
+                .Where(book => titleCandidates.Any(candidate => LooksLikeSameBook(book.Title, candidate)))
+                .DistinctBy(x => x.Id)
+                .ToList();
+
+            if (directMatches.Count == 1)
+            {
+                return directMatches[0];
+            }
+
+            var candidateMatches = titleCandidates
+                .SelectMany(candidate => _bookService.GetCandidates(author.AuthorMetadataId, candidate))
+                .GroupBy(book => book.Id)
+                .OrderByDescending(group => group.Count())
+                .ThenBy(group => group.Key)
+                .ToList();
+
+            if (candidateMatches.Count == 1)
+            {
+                return candidateMatches[0].First();
+            }
+
+            if (candidateMatches.Count > 1 && candidateMatches[0].Count() > candidateMatches[1].Count())
+            {
+                return candidateMatches[0].First();
+            }
+
+            foreach (var candidate in titleCandidates)
             {
                 var book = _bookService.FindByTitle(author.AuthorMetadataId, candidate) ??
                            _bookService.FindByTitleInexact(author.AuthorMetadataId, candidate);
 
-                if (book == null)
+                if (book != null)
                 {
-                    continue;
+                    return book;
                 }
+            }
 
-                idOverrides.Book = book;
+            return null;
+        }
 
+        private Edition ResolveEditionOverride(Author author, Book book, List<string> titleCandidates)
+        {
+            if (author?.AuthorMetadataId <= 0 || book == null)
+            {
+                return null;
+            }
+
+            var editions = _editionService.GetEditionsByBook(book.Id) ?? new List<Edition>();
+            var directMatches = editions
+                .Where(edition => titleCandidates.Any(candidate => LooksLikeSameBook(edition.Title, candidate)))
+                .DistinctBy(x => x.Id)
+                .ToList();
+
+            if (directMatches.Count == 1)
+            {
+                return directMatches[0];
+            }
+
+            if (editions.Count == 1)
+            {
+                return editions[0];
+            }
+
+            foreach (var candidate in titleCandidates)
+            {
                 var edition = _editionService.FindByTitle(author.AuthorMetadataId, candidate) ??
                               _editionService.FindByTitleInexact(author.AuthorMetadataId, candidate);
 
                 if (edition?.BookId == book.Id)
                 {
-                    idOverrides.Edition = edition;
+                    return edition;
                 }
 
-                _logger.Debug("Manual import resolved book override for '{0}' to '{1}'", candidate, book.Title);
-                return idOverrides;
+                var candidateEditions = _editionService.GetCandidates(author.AuthorMetadataId, candidate)
+                    .Where(x => x.BookId == book.Id)
+                    .DistinctBy(x => x.Id)
+                    .ToList();
+
+                if (candidateEditions.Count == 1)
+                {
+                    return candidateEditions[0];
+                }
             }
 
-            return idOverrides;
+            return null;
         }
 
         private static List<string> GetTitleCandidates(List<ParsedTrackInfo> embeddedTracks, ParsedBookInfo parsedBookInfo)
@@ -282,23 +375,81 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                      {
                          title,
                          Parser.Parser.ParseBookTitle(title)?.BookTitle,
+                         title.CleanBookTitle(),
                          title.RemoveBracketsAndContents(),
-                         title.RemoveAfterDash()
+                         title.RemoveAfterDash(),
+                         LeadingPartRegex.Replace(title, string.Empty),
+                         RemoveSeriesPartRegex.Replace(title, " ")
                      }
                      .Where(x => x.IsNotNullOrWhiteSpace())
                      .Select(CanonicalizeTitle)
-                     .Where(x => x.IsNotNullOrWhiteSpace())
-                     .Distinct(StringComparer.InvariantCultureIgnoreCase))
+                     .Where(x => x.IsNotNullOrWhiteSpace()))
             {
                 yield return candidate;
+
+                if (candidate.Contains(" - ", StringComparison.Ordinal))
+                {
+                    var splitIndex = candidate.LastIndexOf(" - ", StringComparison.Ordinal);
+                    yield return CanonicalizeTitle(candidate.Substring(0, splitIndex));
+                    yield return CanonicalizeTitle(candidate.Substring(splitIndex + 3));
+                }
+
+                if (candidate.Contains(':'))
+                {
+                    var split = candidate.Split(':', 2);
+                    yield return CanonicalizeTitle(split[0]);
+                    yield return CanonicalizeTitle(split[1]);
+                }
             }
         }
 
         private static string CanonicalizeTitle(string title)
         {
-            return title?
+            if (title == null)
+            {
+                return null;
+            }
+
+            var normalized = title
                 .Trim(' ', '-', '_', '.', ',', ':', ';')
-                .Replace("  ", " ");
+                .Replace('_', ' ');
+
+            return CollapseWhitespaceRegex.Replace(normalized, " ");
+        }
+
+        private static bool LooksLikeSameBook(string expectedTitle, string candidateTitle)
+        {
+            if (expectedTitle.IsNullOrWhiteSpace() || candidateTitle.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            var expectedNormalizedTitle = Parser.Parser.NormalizeTitle(expectedTitle);
+            var normalizedCandidate = Parser.Parser.NormalizeTitle(candidateTitle);
+            if (expectedNormalizedTitle.IsNullOrWhiteSpace() || normalizedCandidate.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            var expectedTokens = expectedNormalizedTitle
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .ToList();
+
+            var candidateTokens = normalizedCandidate
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .ToList();
+
+            if (expectedTokens.Any() && expectedTokens.All(token => candidateTokens.Contains(token)))
+            {
+                return true;
+            }
+
+            if (candidateTokens.Any() && candidateTokens.All(token => expectedTokens.Contains(token)))
+            {
+                return true;
+            }
+
+            return normalizedCandidate.LevenshteinCoefficient(expectedNormalizedTitle) >= 0.8;
         }
 
         public List<ManualImportItem> UpdateItems(List<ManualImportItem> items)
