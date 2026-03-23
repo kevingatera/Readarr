@@ -12,6 +12,7 @@ using NzbDrone.Core.Download;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MediaFiles.BookImport;
+using NzbDrone.Core.MediaFiles.BookImport.Identification;
 using NzbDrone.Core.MediaFiles.BookImport.Manual;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.Parser.Model;
@@ -88,6 +89,10 @@ namespace NzbDrone.Core.Test.MediaFiles
                 .Setup(x => x.GetFileInfo(_filePath))
                 .Returns(_fileInfo);
 
+            Mocker.GetMock<IDiskProvider>()
+                .Setup(x => x.GetFileSize(_filePath))
+                .Returns(1234);
+
             Mocker.GetMock<IMetadataTagService>()
                 .Setup(x => x.ReadTags(_fileInfo))
                 .Returns(new ParsedTrackInfo());
@@ -96,6 +101,72 @@ namespace NzbDrone.Core.Test.MediaFiles
                 .Setup(x => x.Import(It.IsAny<List<ImportDecision<LocalBook>>>(), It.IsAny<bool>(), It.IsAny<DownloadClientItem>(), It.IsAny<ImportMode>()))
                 .Returns((List<ImportDecision<LocalBook>> decisions, bool replaceExisting, DownloadClientItem downloadClientItem, ImportMode importMode) =>
                     decisions.Select(d => new ImportResult(d)).ToList());
+        }
+
+        [Test]
+        public void should_resolve_book_override_from_consistent_embedded_title_for_folder_import()
+        {
+            var folder = Path.GetDirectoryName(_filePath);
+            IdentificationOverrides capturedOverride = null;
+
+            Mocker.GetMock<IDiskProvider>()
+                .Setup(x => x.FolderExists(folder))
+                .Returns(true);
+
+            Mocker.GetMock<IDiskScanService>()
+                .Setup(x => x.GetBookFiles(folder))
+                .Returns(new List<IFileInfo> { _fileInfo });
+
+            Mocker.GetMock<IMetadataTagService>()
+                .Setup(x => x.ReadTags(_fileInfo))
+                .Returns(new ParsedTrackInfo
+                {
+                    Title = "Resonant Son: Resonant Son, Book 1",
+                    BookTitle = "Resonant Son: Resonant Son, Book 1"
+                });
+
+            Mocker.GetMock<IBookService>()
+                .Setup(x => x.FindByTitle(_author.AuthorMetadataId, "Resonant Son: Resonant Son, Book 1"))
+                .Returns((Book)null);
+
+            Mocker.GetMock<IBookService>()
+                .Setup(x => x.FindByTitleInexact(_author.AuthorMetadataId, "Resonant Son: Resonant Son, Book 1"))
+                .Returns(_book);
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(x => x.FindByTitle(_author.AuthorMetadataId, "Resonant Son: Resonant Son, Book 1"))
+                .Returns((Edition)null);
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(x => x.FindByTitleInexact(_author.AuthorMetadataId, "Resonant Son: Resonant Son, Book 1"))
+                .Returns(_edition);
+
+            Mocker.GetMock<IMakeImportDecision>()
+                .Setup(x => x.GetImportDecisions(It.IsAny<List<IFileInfo>>(),
+                                                It.IsAny<IdentificationOverrides>(),
+                                                It.IsAny<ImportDecisionMakerInfo>(),
+                                                It.IsAny<ImportDecisionMakerConfig>()))
+                .Callback<List<IFileInfo>, IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((_, id, _, _) => capturedOverride = id)
+                .Returns(new List<ImportDecision<LocalBook>>
+                {
+                    new ImportDecision<LocalBook>(new LocalBook
+                    {
+                        Path = _filePath,
+                        Author = _author,
+                        Book = _book,
+                        Edition = _edition,
+                        Quality = new QualityModel(Quality.M4B),
+                        FileTrackInfo = new ParsedTrackInfo()
+                    })
+                });
+
+            var result = Subject.GetMediaFiles(folder, null, _author, FilterFilesType.None, false);
+
+            result.Should().HaveCount(1);
+            capturedOverride.Should().NotBeNull();
+            capturedOverride.Author.Should().Be(_author);
+            capturedOverride.Book.Should().Be(_book);
+            capturedOverride.Edition.Should().Be(_edition);
         }
 
         [Test]
