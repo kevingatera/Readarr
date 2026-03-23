@@ -107,14 +107,14 @@ namespace NzbDrone.Core.Test.MediaFiles
         public void should_resolve_book_override_from_consistent_embedded_title_for_folder_import()
         {
             var folder = Path.GetDirectoryName(_filePath);
-            NzbDrone.Core.MediaFiles.BookImport.Identification.IdentificationOverrides capturedOverride = null;
+            NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides capturedOverride = null;
 
             Mocker.GetMock<IDiskProvider>()
                 .Setup(x => x.FolderExists(folder))
                 .Returns(true);
 
             Mocker.GetMock<IDiskScanService>()
-                .Setup(x => x.GetBookFiles(folder))
+                .Setup(x => x.GetBookFiles(folder, true))
                 .Returns(new[] { _fileInfo });
 
             Mocker.GetMock<IMetadataTagService>()
@@ -143,10 +143,10 @@ namespace NzbDrone.Core.Test.MediaFiles
 
             Mocker.GetMock<IMakeImportDecision>()
                 .Setup(x => x.GetImportDecisions(It.IsAny<List<IFileInfo>>(),
-                                                It.IsAny<NzbDrone.Core.MediaFiles.BookImport.Identification.IdentificationOverrides>(),
+                                                It.IsAny<NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides>(),
                                                 It.IsAny<ImportDecisionMakerInfo>(),
                                                 It.IsAny<ImportDecisionMakerConfig>()))
-                .Callback<List<IFileInfo>, NzbDrone.Core.MediaFiles.BookImport.Identification.IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((_, id, _, _) => capturedOverride = id)
+                .Callback<List<IFileInfo>, NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((_, id, _, _) => capturedOverride = id)
                 .Returns(new List<ImportDecision<LocalBook>>
                 {
                     new ImportDecision<LocalBook>(new LocalBook
