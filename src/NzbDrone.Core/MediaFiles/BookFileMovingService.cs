@@ -23,6 +23,7 @@ namespace NzbDrone.Core.MediaFiles
     public class BookFileMovingService : IMoveBookFiles
     {
         private readonly IEditionService _editionService;
+        private readonly IMediaFileService _mediaFileService;
         private readonly IUpdateBookFileService _updateBookFileService;
         private readonly IBuildFileNames _buildFileNames;
         private readonly IDiskTransferService _diskTransferService;
@@ -34,6 +35,7 @@ namespace NzbDrone.Core.MediaFiles
         private readonly Logger _logger;
 
         public BookFileMovingService(IEditionService editionService,
+                                      IMediaFileService mediaFileService,
                                       IUpdateBookFileService updateBookFileService,
                                       IBuildFileNames buildFileNames,
                                       IDiskTransferService diskTransferService,
@@ -45,6 +47,7 @@ namespace NzbDrone.Core.MediaFiles
                                       Logger logger)
         {
             _editionService = editionService;
+            _mediaFileService = mediaFileService;
             _updateBookFileService = updateBookFileService;
             _buildFileNames = buildFileNames;
             _diskTransferService = diskTransferService;
@@ -114,6 +117,32 @@ namespace NzbDrone.Core.MediaFiles
             if (bookFilePath == destinationFilePath)
             {
                 throw new SameFilenameException("File not moved, source and destination are the same", bookFilePath);
+            }
+
+            if (_diskProvider.FileExists(destinationFilePath))
+            {
+                var trackedDestination = _mediaFileService.GetFileWithPath(destinationFilePath);
+
+                if (trackedDestination == null)
+                {
+                    _logger.Warn("Destination file already exists at {0} without a tracked book file entry, adopting existing file", destinationFilePath);
+
+                    bookFile.Path = destinationFilePath;
+                    _updateBookFileService.ChangeFileDateForFile(bookFile, author, book);
+
+                    try
+                    {
+                        _mediaFileAttributeService.SetFolderLastWriteTime(author.Path, bookFile.DateAdded);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warn(ex, "Unable to set last write time");
+                    }
+
+                    _mediaFileAttributeService.SetFilePermissions(destinationFilePath);
+
+                    return bookFile;
+                }
             }
 
             _rootFolderWatchingService.ReportFileSystemChangeBeginning(bookFilePath, destinationFilePath);
