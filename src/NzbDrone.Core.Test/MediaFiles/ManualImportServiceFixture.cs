@@ -41,7 +41,6 @@ namespace NzbDrone.Core.Test.MediaFiles
             _author = Builder<Author>.CreateNew()
                 .With(x => x.Id = 14)
                 .With(x => x.AuthorMetadataId = 14)
-                .With(x => x.AuthorName = "Jason Anspach")
                 .With(x => x.Path = @"C:\Audiobooks\Jason Anspach".AsOsAgnostic())
                 .Build();
 
