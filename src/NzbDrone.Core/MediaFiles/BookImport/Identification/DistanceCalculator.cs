@@ -18,6 +18,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
     public static class DistanceCalculator
     {
         private static readonly Logger Logger = NzbDroneLogger.GetLogger(typeof(DistanceCalculator));
+        private const double IgnoreFormatPenaltyThreshold = 0.20;
 
         public static readonly List<string> VariousAuthorIds = new List<string> { "89ad4ac3-39f7-470e-963a-56509c546377" };
 
@@ -162,28 +163,43 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
 
             // try to tilt it towards the correct "type" of release
             var isAudio = MediaFileExtensions.AudioExtensions.Contains(localTracks.First().Path.GetPathExtension());
+            var ignoreFormatPenalty = dist.NormalizedDistance() <= IgnoreFormatPenaltyThreshold;
 
             if (edition.Format.IsNotNullOrWhiteSpace())
             {
                 if (!isAudio)
                 {
-                    // text books should prefer ebook formats
-                    dist.AddBool("ebook_format", !EbookFormats.Contains(edition.Format));
-                    Logger.Trace($"ebook_format: {edition.Format} - {!EbookFormats.Contains(edition.Format)}; {dist.NormalizedDistance()}");
+                    if (ignoreFormatPenalty && AudiobookFormats.Contains(edition.Format))
+                    {
+                        Logger.Trace($"Skipping audiobook format penalties for close text match: {edition.Format}; {dist.NormalizedDistance()}");
+                    }
+                    else
+                    {
+                        // text books should prefer ebook formats
+                        dist.AddBool("ebook_format", !EbookFormats.Contains(edition.Format));
+                        Logger.Trace($"ebook_format: {edition.Format} - {!EbookFormats.Contains(edition.Format)}; {dist.NormalizedDistance()}");
 
-                    // text books should not match audio entries
-                    dist.AddBool("wrong_format", AudiobookFormats.Contains(edition.Format));
-                    Logger.Trace($"wrong_format: {edition.Format} - {AudiobookFormats.Contains(edition.Format)}; {dist.NormalizedDistance()}");
+                        // text books should not match audio entries
+                        dist.AddBool("wrong_format", AudiobookFormats.Contains(edition.Format));
+                        Logger.Trace($"wrong_format: {edition.Format} - {AudiobookFormats.Contains(edition.Format)}; {dist.NormalizedDistance()}");
+                    }
                 }
                 else
                 {
-                    // audio books should prefer audio formats
-                    dist.AddBool("audio_format", !AudiobookFormats.Contains(edition.Format));
-                    Logger.Trace($"audio_format: {edition.Format} - {!AudiobookFormats.Contains(edition.Format)}; {dist.NormalizedDistance()}");
+                    if (ignoreFormatPenalty && EbookFormats.Contains(edition.Format))
+                    {
+                        Logger.Trace($"Skipping ebook format penalties for close audio match: {edition.Format}; {dist.NormalizedDistance()}");
+                    }
+                    else
+                    {
+                        // audio books should prefer audio formats
+                        dist.AddBool("audio_format", !AudiobookFormats.Contains(edition.Format));
+                        Logger.Trace($"audio_format: {edition.Format} - {!AudiobookFormats.Contains(edition.Format)}; {dist.NormalizedDistance()}");
 
-                    // audio books should not match ebook entries
-                    dist.AddBool("wrong_format", EbookFormats.Contains(edition.Format));
-                    Logger.Trace($"wrong_format: {edition.Format} - {EbookFormats.Contains(edition.Format)}; {dist.NormalizedDistance()}");
+                        // audio books should not match ebook entries
+                        dist.AddBool("wrong_format", EbookFormats.Contains(edition.Format));
+                        Logger.Trace($"wrong_format: {edition.Format} - {EbookFormats.Contains(edition.Format)}; {dist.NormalizedDistance()}");
+                    }
                 }
             }
 
