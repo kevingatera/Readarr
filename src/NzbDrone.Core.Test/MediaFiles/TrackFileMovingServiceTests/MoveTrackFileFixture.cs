@@ -144,5 +144,36 @@ namespace NzbDrone.Core.Test.MediaFiles.TrackFileMovingServiceTests
             Mocker.GetMock<IUpdateBookFileService>()
                   .Verify(v => v.ChangeFileDateForFile(result, _author, _localtrack.Book), Times.Once());
         }
+
+        [Test]
+        public void should_replace_tracked_destination_entry_when_destination_file_is_already_tracked()
+        {
+            var destinationPath = @"C:\Test\Music\Author\Book\File Name.mp3".AsOsAgnostic();
+            var trackedDestination = Builder<BookFile>.CreateNew()
+                .With(x => x.Id = 42)
+                .With(x => x.Path = destinationPath)
+                .With(x => x.EditionId = 999)
+                .Build();
+
+            _trackFile.EditionId = 12;
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Setup(s => s.FileExists(destinationPath))
+                  .Returns(true);
+
+            Mocker.GetMock<IMediaFileService>()
+                  .Setup(s => s.GetFileWithPath(destinationPath))
+                  .Returns(trackedDestination);
+
+            var result = Subject.MoveBookFile(_trackFile, _localtrack);
+
+            result.Path.Should().Be(destinationPath);
+
+            Mocker.GetMock<IMediaFileService>()
+                  .Verify(v => v.Delete(trackedDestination, DeleteMediaFileReason.ManualOverride), Times.Once());
+
+            Mocker.GetMock<IDiskTransferService>()
+                  .Verify(v => v.TransferFile(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TransferMode>(), It.IsAny<bool>()), Times.Never());
+        }
     }
 }
