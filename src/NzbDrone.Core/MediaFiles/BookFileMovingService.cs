@@ -143,6 +143,26 @@ namespace NzbDrone.Core.MediaFiles
 
                     return bookFile;
                 }
+
+                _logger.Warn("Destination file already exists at {0} with tracked book file {1}, replacing tracked entry during import", destinationFilePath, trackedDestination.Id);
+
+                _mediaFileService.Delete(trackedDestination, DeleteMediaFileReason.ManualOverride);
+
+                bookFile.Path = destinationFilePath;
+                _updateBookFileService.ChangeFileDateForFile(bookFile, author, book);
+
+                try
+                {
+                    _mediaFileAttributeService.SetFolderLastWriteTime(author.Path, bookFile.DateAdded);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warn(ex, "Unable to set last write time");
+                }
+
+                _mediaFileAttributeService.SetFilePermissions(destinationFilePath);
+
+                return bookFile;
             }
 
             _rootFolderWatchingService.ReportFileSystemChangeBeginning(bookFilePath, destinationFilePath);
