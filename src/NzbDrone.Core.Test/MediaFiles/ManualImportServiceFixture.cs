@@ -214,6 +214,63 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
+        public void should_ignore_null_books_when_resolving_manual_import_overrides()
+        {
+            var folder = Path.GetDirectoryName(_filePath);
+            NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides capturedOverride = null;
+
+            Mocker.GetMock<IDiskProvider>()
+                .Setup(x => x.FolderExists(folder))
+                .Returns(true);
+
+            Mocker.GetMock<IDiskScanService>()
+                .Setup(x => x.GetBookFiles(folder, true))
+                .Returns(new[] { _fileInfo });
+
+            Mocker.GetMock<IMetadataTagService>()
+                .Setup(x => x.ReadTags(_fileInfo))
+                .Returns(new ParsedTrackInfo
+                {
+                    Title = "Takeover",
+                    BookTitle = "Takeover"
+                });
+
+            Mocker.GetMock<IBookService>()
+                .Setup(x => x.GetBooksByAuthorMetadataId(_author.AuthorMetadataId))
+                .Returns(new List<Book> { null, _book });
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(x => x.GetEditionsByBook(_book.Id))
+                .Returns(new List<Edition> { null, _edition });
+
+            Mocker.GetMock<IMakeImportDecision>()
+                .Setup(x => x.GetImportDecisions(It.IsAny<List<IFileInfo>>(),
+                                                It.IsAny<NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides>(),
+                                                It.IsAny<ImportDecisionMakerInfo>(),
+                                                It.IsAny<ImportDecisionMakerConfig>()))
+                .Callback<List<IFileInfo>, NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((_, id, _, _) => capturedOverride = id)
+                .Returns(new List<ImportDecision<LocalBook>>
+                {
+                    new ImportDecision<LocalBook>(new LocalBook
+                    {
+                        Path = _filePath,
+                        Author = _author,
+                        Book = _book,
+                        Edition = _edition,
+                        Quality = new QualityModel(Quality.M4B),
+                        FileTrackInfo = new ParsedTrackInfo()
+                    })
+                });
+
+            Action act = () => Subject.GetMediaFiles(folder, null, _author, FilterFilesType.None, false);
+
+            act.Should().NotThrow();
+            capturedOverride.Should().NotBeNull();
+            capturedOverride.Book.Should().Be(_book);
+            capturedOverride.Edition.Should().Be(_edition);
+        }
+
+        [Test]
         public void should_resolve_book_override_from_normalized_embedded_title_variants_for_folder_import()
         {
             var folder = Path.GetDirectoryName(_filePath);

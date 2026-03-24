@@ -252,17 +252,30 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
 
         private Book ResolveBookOverride(Author author, List<string> titleCandidates)
         {
-            if (author?.AuthorMetadataId <= 0 || !titleCandidates.Any())
+            var normalizedCandidates = (titleCandidates ?? new List<string>())
+                .Where(title => title.IsNotNullOrWhiteSpace())
+                .Distinct(StringComparer.InvariantCultureIgnoreCase)
+                .ToList();
+
+            if (author?.AuthorMetadataId <= 0 || !normalizedCandidates.Any())
             {
                 return null;
             }
 
-            var authorBooks = _bookService.GetBooksByAuthorMetadataId(author.AuthorMetadataId) ?? new List<Book>();
+            var authorBooks = (_bookService.GetBooksByAuthorMetadataId(author.AuthorMetadataId) ?? new List<Book>())
+                .Where(book => book?.Title.IsNotNullOrWhiteSpace() == true)
+                .ToList();
+
+            if (!authorBooks.Any())
+            {
+                return null;
+            }
+
             var directMatches = authorBooks
                 .Select(book => new
                 {
                     Book = book,
-                    Score = titleCandidates.Max(candidate => GetTitleMatchScore(book.Title, candidate))
+                    Score = normalizedCandidates.Max(candidate => GetTitleMatchScore(book.Title, candidate))
                 })
                 .Where(x => x.Score >= OverrideMatchThreshold)
                 .OrderByDescending(x => x.Score)
@@ -280,13 +293,14 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 return directMatches[0].Book;
             }
 
-            var fallbackMatches = titleCandidates
+            var fallbackMatches = normalizedCandidates
                 .SelectMany(candidate => _bookService.GetCandidates(author.AuthorMetadataId, candidate))
+                .Where(book => book?.Title.IsNotNullOrWhiteSpace() == true)
                 .DistinctBy(book => book.Id)
                 .Select(book => new
                 {
                     Book = book,
-                    Score = titleCandidates.Max(candidate => GetTitleMatchScore(book.Title, candidate))
+                    Score = normalizedCandidates.Max(candidate => GetTitleMatchScore(book.Title, candidate))
                 })
                 .Where(x => x.Score >= OverrideMatchThreshold)
                 .OrderByDescending(x => x.Score)
@@ -309,17 +323,30 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
 
         private Edition ResolveEditionOverride(Author author, Book book, List<string> titleCandidates)
         {
-            if (author?.AuthorMetadataId <= 0 || book == null)
+            var normalizedCandidates = (titleCandidates ?? new List<string>())
+                .Where(title => title.IsNotNullOrWhiteSpace())
+                .Distinct(StringComparer.InvariantCultureIgnoreCase)
+                .ToList();
+
+            if (author?.AuthorMetadataId <= 0 || book == null || !normalizedCandidates.Any())
             {
                 return null;
             }
 
-            var editions = _editionService.GetEditionsByBook(book.Id) ?? new List<Edition>();
+            var editions = (_editionService.GetEditionsByBook(book.Id) ?? new List<Edition>())
+                .Where(edition => edition?.Title.IsNotNullOrWhiteSpace() == true)
+                .ToList();
+
+            if (!editions.Any())
+            {
+                return null;
+            }
+
             var directMatches = editions
                 .Select(edition => new
                 {
                     Edition = edition,
-                    Score = titleCandidates.Max(candidate => GetTitleMatchScore(edition.Title, candidate))
+                    Score = normalizedCandidates.Max(candidate => GetTitleMatchScore(edition.Title, candidate))
                 })
                 .Where(x => x.Score >= OverrideMatchThreshold)
                 .OrderByDescending(x => x.Score)
@@ -342,7 +369,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 return editions[0];
             }
 
-            foreach (var candidate in titleCandidates)
+            foreach (var candidate in normalizedCandidates)
             {
                 var edition = _editionService.FindByTitle(author.AuthorMetadataId, candidate) ??
                               _editionService.FindByTitleInexact(author.AuthorMetadataId, candidate);
@@ -353,12 +380,12 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 }
 
                 var candidateEditions = _editionService.GetCandidates(author.AuthorMetadataId, candidate)
-                    .Where(x => x.BookId == book.Id)
+                    .Where(x => x?.BookId == book.Id && x.Title.IsNotNullOrWhiteSpace())
                     .DistinctBy(x => x.Id)
                     .Select(editionCandidate => new
                     {
                         Edition = editionCandidate,
-                        Score = titleCandidates.Max(title => GetTitleMatchScore(editionCandidate.Title, title))
+                        Score = normalizedCandidates.Max(title => GetTitleMatchScore(editionCandidate.Title, title))
                     })
                     .Where(x => x.Score >= OverrideMatchThreshold)
                     .OrderByDescending(x => x.Score)
