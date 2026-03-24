@@ -149,6 +149,31 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
+        public void should_resolve_book_edition_when_import_decision_has_no_edition()
+        {
+            var decision = _approvedDecisions.First();
+            var book = decision.Item.Book;
+            var existingEdition = decision.Item.Edition;
+
+            book.ForeignEditionId = existingEdition.ForeignEditionId;
+            decision.Item.Edition = null;
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(s => s.GetEditionByForeignEditionId(existingEdition.ForeignEditionId))
+                .Returns(existingEdition);
+
+            Subject.Import(new List<ImportDecision<LocalBook>> { decision }, false);
+
+            decision.Item.Edition.Should().BeSameAs(existingEdition);
+
+            Mocker.GetMock<IEditionService>()
+                .Verify(v => v.SetMonitored(existingEdition), Times.Once());
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.AddMany(It.Is<List<BookFile>>(files => files.Single().EditionId == existingEdition.Id)), Times.Once());
+        }
+
+        [Test]
         public void should_reject_when_existing_persisted_edition_belongs_to_different_book()
         {
             var foreignEditionId = "cross-book-edition";
