@@ -492,6 +492,35 @@ namespace NzbDrone.Core.MediaFiles.BookImport
             var book = decisions.First().Item.Book;
             var edition = decisions.First().Item.Edition;
 
+            if (edition == null)
+            {
+                var foreignEditionId = book?.ForeignEditionId;
+
+                if (!foreignEditionId.IsNullOrWhiteSpace())
+                {
+                    edition = _editionService.GetEditionByForeignEditionId(foreignEditionId);
+
+                    if (edition == null)
+                    {
+                        edition = book?.Editions?.Value?.SingleOrDefault(x => x.ForeignEditionId == foreignEditionId);
+                    }
+                }
+
+                edition ??= book?.Editions?.Value?.SingleOrDefault(x => x.Monitored) ?? book?.Editions?.Value?.FirstOrDefault();
+
+                if (edition == null)
+                {
+                    _logger.Warn("Unable to resolve import edition for book {0}", book);
+                    RejectBook(decisions);
+                    return null;
+                }
+
+                foreach (var decision in decisions)
+                {
+                    decision.Item.Edition = edition;
+                }
+            }
+
             if (edition.Id == 0)
             {
                 var dbEdition = _editionService.GetEditionByForeignEditionId(edition.ForeignEditionId);
