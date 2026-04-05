@@ -344,5 +344,101 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
             dist.Reasons.Should().Contain("wrong format");
             dist.NormalizedDistance().Should().BeGreaterThan(0.20);
         }
+
+        [Test]
+        public void should_soften_series_part_penalty_for_single_file_audio_with_strong_title_and_missing_ids()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };
+
+            var book = new Book
+            {
+                Title = "The Betrayed",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata),
+                SeriesLinks = new LazyLoaded<List<SeriesBookLink>>(new List<SeriesBookLink>
+                {
+                    new SeriesBookLink
+                    {
+                        Position = "24",
+                        Series = new LazyLoaded<Series>(new Series { Title = "Galaxy's Edge" })
+                    }
+                })
+            };
+
+            var edition = new Edition
+            {
+                Title = "The Betrayed",
+                Asin = "B0DJBFP298",
+                Format = "Audible Audio",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/Nick Cole - Galaxy's Edge, Book 19 - The Betrayed.m4b",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "The Betrayed",
+                        BookTitle = "Galaxy's Edge, Book 19 - The Betrayed",
+                        Authors = new List<string> { "Jason Anspach" }
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Penalties.Should().ContainKey("series_part");
+            dist.Penalties["series_part"].Should().ContainSingle().Which.Should().Be(0.5);
+            dist.NormalizedDistance().Should().BeLessThan(0.20);
+        }
+
+        [Test]
+        public void should_keep_full_series_part_penalty_when_local_identifier_exists()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };
+
+            var book = new Book
+            {
+                Title = "The Betrayed",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata),
+                SeriesLinks = new LazyLoaded<List<SeriesBookLink>>(new List<SeriesBookLink>
+                {
+                    new SeriesBookLink
+                    {
+                        Position = "24",
+                        Series = new LazyLoaded<Series>(new Series { Title = "Galaxy's Edge" })
+                    }
+                })
+            };
+
+            var edition = new Edition
+            {
+                Title = "The Betrayed",
+                Asin = "B0DJBFP298",
+                Format = "Audible Audio",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/Nick Cole - Galaxy's Edge, Book 19 - The Betrayed.m4b",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "The Betrayed",
+                        BookTitle = "Galaxy's Edge, Book 19 - The Betrayed",
+                        Authors = new List<string> { "Jason Anspach" },
+                        Asin = "B000000000"
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Penalties.Should().ContainKey("series_part");
+            dist.Penalties["series_part"].Should().ContainSingle().Which.Should().Be(1.0);
+        }
     }
 }

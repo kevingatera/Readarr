@@ -82,7 +82,20 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             var editionPartNumbers = GetEditionPartNumbers(edition);
             if (localPartNumbers.Any() && editionPartNumbers.Any())
             {
-                dist.AddBool("series_part", !HasMatchingPartNumber(localPartNumbers, editionPartNumbers));
+                var hasMatchingPart = HasMatchingPartNumber(localPartNumbers, editionPartNumbers);
+                if (!hasMatchingPart &&
+                    ShouldSoftenSeriesPartPenalty(localTracks, fileTitles, titleOptions))
+                {
+                    // Single-file audiobook releases frequently include stale "Book N"
+                    // tags in folder names. If title matching is strong and local files
+                    // lack ISBN/ASIN, treat part mismatch as a soft signal.
+                    dist.Add("series_part", 0.5);
+                }
+                else
+                {
+                    dist.AddBool("series_part", !hasMatchingPart);
+                }
+
                 Logger.Trace("series_part: '{0}' vs '{1}'; {2}",
                     localPartNumbers.Select(x => x.ToString("0.###", CultureInfo.InvariantCulture)).ConcatToString("' or '"),
                     editionPartNumbers.Select(x => x.ToString("0.###", CultureInfo.InvariantCulture)).ConcatToString("' or '"),
@@ -416,6 +429,71 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                 if (editionPartNumbers.Any(x => Math.Abs(x - localPartNumber) < 0.01))
                 {
                     return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool ShouldSoftenSeriesPartPenalty(List<LocalBook> localTracks, List<string> fileTitles, List<string> titleOptions)
+        {
+            if (localTracks.Count != 1)
+            {
+                return false;
+            }
+
+            var first = localTracks[0];
+            var extension = first.Path.GetPathExtension();
+            if (!MediaFileExtensions.AudioExtensions.Contains(extension))
+            {
+                return false;
+            }
+
+            var hasLocalIdentifier = localTracks.Any(x =>
+                x.FileTrackInfo?.Asin.IsNotNullOrWhiteSpace() == true ||
+                x.FileTrackInfo?.Isbn.IsNotNullOrWhiteSpace() == true);
+
+            if (hasLocalIdentifier)
+            {
+                return false;
+            }
+
+            return HasStrongTitleMatch(fileTitles, titleOptions);
+        }
+
+        private static bool HasStrongTitleMatch(List<string> fileTitles, List<string> titleOptions)
+        {
+            foreach (var fileTitle in fileTitles)
+            {
+                var normalizedFileTitle = Parser.Parser.NormalizeTitle(fileTitle);
+                if (normalizedFileTitle.IsNullOrWhiteSpace())
+                {
+                    continue;
+                }
+
+                foreach (var titleOption in titleOptions)
+                {
+                    var normalizedOption = Parser.Parser.NormalizeTitle(titleOption);
+                    if (normalizedOption.IsNullOrWhiteSpace())
+                    {
+                        continue;
+                    }
+
+                    if (normalizedFileTitle.Equals(normalizedOption, StringComparison.InvariantCultureIgnoreCase))
+                    {
+                        return true;
+                    }
+
+                    if (normalizedFileTitle.Contains(normalizedOption, StringComparison.InvariantCultureIgnoreCase) ||
+                        normalizedOption.Contains(normalizedFileTitle, StringComparison.InvariantCultureIgnoreCase))
+                    {
+                        return true;
+                    }
+
+                    if (normalizedFileTitle.LevenshteinCoefficient(normalizedOption) >= 0.90)
+                    {
+                        return true;
+                    }
                 }
             }
 
