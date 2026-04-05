@@ -167,7 +167,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 .ToList();
         }
 
-        public List<Book> SearchForNewBook(string title, string author, bool getAllEditions = true)
+        public virtual List<Book> SearchForNewBook(string title, string author, bool getAllEditions = true)
         {
             var q = title.ToLower().Trim();
             if (author != null)
