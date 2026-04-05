@@ -142,6 +142,66 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
             normalized.Should().BeNull();
         }
 
+        [Test]
+        public void should_map_series_links_when_link_uses_edition_id()
+        {
+            var authorResource = new AuthorResource
+            {
+                ForeignId = 14168090,
+                Name = "Jason Anspach",
+                Works = new List<WorkResource>
+                {
+                    new WorkResource
+                    {
+                        ForeignId = 284588635,
+                        Title = "Fracture",
+                        Authors = new List<AuthorResource>
+                        {
+                            new AuthorResource { ForeignId = 14168090, Name = "Jason Anspach" }
+                        },
+                        Books = new List<BookResource>
+                        {
+                            new BookResource
+                            {
+                                ForeignId = 249509643,
+                                Title = "Fracture",
+                                Contributors = new List<ContributorResource>
+                                {
+                                    new ContributorResource { ForeignId = 14168090, Role = "Author" }
+                                }
+                            }
+                        }
+                    }
+                },
+                Series = new List<SeriesResource>
+                {
+                    new SeriesResource
+                    {
+                        ForeignId = 213397,
+                        Title = "Galaxy's Edge",
+                        LinkItems = new List<SeriesWorkLinkResource>
+                        {
+                            new SeriesWorkLinkResource
+                            {
+                                ForeignWorkId = 249509643,
+                                PositionInSeries = "25",
+                                SeriesPosition = 0,
+                                Primary = true
+                            }
+                        }
+                    }
+                }
+            };
+
+            var author = InvokePrivateStatic<Author>("MapAuthor", authorResource);
+
+            author.Books.Value.Should().HaveCount(1);
+            author.Books.Value[0].ForeignBookId.Should().Be("284588635");
+            author.Books.Value[0].SeriesLinks.Value.Should().HaveCount(1);
+            author.Books.Value[0].SeriesLinks.Value[0].Position.Should().Be("25");
+            author.Books.Value[0].SeriesLinks.Value[0].Series.Value.ForeignSeriesId.Should().Be("213397");
+        }
+
         private static T InvokePrivateStatic<T>(string methodName, params object[] args)
         {
             var method = typeof(BookInfoProxy).GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static);

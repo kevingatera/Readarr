@@ -836,6 +836,16 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         private static void MapSeriesLinks(List<Series> series, List<Book> books, List<SeriesResource> resource)
         {
             var bookDict = books.ToDictionary(x => x.ForeignBookId);
+            var editionBookDict = books
+                .SelectMany(book =>
+                {
+                    var editions = book.Editions?.Value ?? new List<Edition>();
+                    return editions
+                        .Where(edition => edition.ForeignEditionId.IsNotNullOrWhiteSpace())
+                        .Select(edition => new { edition.ForeignEditionId, Book = book });
+                })
+                .GroupBy(x => x.ForeignEditionId)
+                .ToDictionary(x => x.Key, x => x.First().Book);
             var seriesDict = series.ToDictionary(x => x.ForeignSeriesId);
 
             foreach (var book in books)
@@ -848,14 +858,39 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             {
                 if (seriesDict.TryGetValue(s.ForeignId.ToString(), out var curr))
                 {
-                    curr.LinkItems = s.LinkItems.Where(x => x.ForeignWorkId != 0 && bookDict.ContainsKey(x.ForeignWorkId.ToString())).Select(l => new SeriesBookLink
-                    {
-                        Book = bookDict[l.ForeignWorkId.ToString()],
-                        Series = curr,
-                        IsPrimary = l.Primary,
-                        Position = l.PositionInSeries,
-                        SeriesPosition = l.SeriesPosition
-                    }).ToList();
+                    curr.LinkItems = s.LinkItems
+                        .Where(x => x.ForeignWorkId != 0)
+                        .Select(l =>
+                        {
+                            var key = l.ForeignWorkId.ToString();
+                            if (bookDict.TryGetValue(key, out var mappedBook))
+                            {
+                                return new SeriesBookLink
+                                {
+                                    Book = mappedBook,
+                                    Series = curr,
+                                    IsPrimary = l.Primary,
+                                    Position = l.PositionInSeries,
+                                    SeriesPosition = l.SeriesPosition
+                                };
+                            }
+
+                            if (editionBookDict.TryGetValue(key, out mappedBook))
+                            {
+                                return new SeriesBookLink
+                                {
+                                    Book = mappedBook,
+                                    Series = curr,
+                                    IsPrimary = l.Primary,
+                                    Position = l.PositionInSeries,
+                                    SeriesPosition = l.SeriesPosition
+                                };
+                            }
+
+                            return null;
+                        })
+                        .Where(x => x != null)
+                        .ToList();
 
                     foreach (var l in curr.LinkItems.Value)
                     {
