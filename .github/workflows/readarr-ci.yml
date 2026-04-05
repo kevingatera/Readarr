@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - develop
+      - homelab
     paths-ignore:
       - ".github/**"
       - "src/Readarr.Api.*/openapi.json"
@@ -13,6 +14,7 @@ on:
     paths-ignore:
       - "src/NzbDrone.Core/Localization/Core/**"
       - "src/Readarr.Api.*/openapi.json"
+  workflow_dispatch:
 
 env:
   DOTNET_VERSION: "6.0.x"
