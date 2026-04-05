@@ -135,6 +135,12 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         {
             var books = SearchForNewBook(title, null, false);
 
+            if (!books.Any())
+            {
+                _logger.Debug("No fast add-search results for '{0}', retrying with full edition search", title);
+                books = SearchForNewBook(title, null, true);
+            }
+
             var result = new List<object>();
             foreach (var book in books)
             {
