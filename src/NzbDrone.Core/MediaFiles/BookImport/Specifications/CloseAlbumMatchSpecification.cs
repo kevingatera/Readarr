@@ -3,7 +3,6 @@ using System.Linq;
 using NLog;
 using NzbDrone.Core.DecisionEngine;
 using NzbDrone.Core.Download;
-using NzbDrone.Core.MediaFiles.BookImport.Identification;
 using NzbDrone.Core.Parser.Model;
 
 namespace NzbDrone.Core.MediaFiles.BookImport.Specifications
