@@ -361,5 +361,51 @@ namespace NzbDrone.Core.Test.MediaFiles
             Mocker.GetMock<IMediaFileService>()
                 .Verify(v => v.Delete(It.IsAny<BookFile>(), DeleteMediaFileReason.ManualOverride), Times.Once());
         }
+
+        [Test]
+        public void should_skip_automatic_existing_file_cross_book_relink()
+        {
+            var track = _approvedDecisions.First();
+            track.Item.ExistingFile = true;
+            track.Item.AllowSameFileMatch = false;
+            track.Item.Edition.Id = 10;
+
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(s => s.GetFileWithPath(It.IsAny<string>()))
+                .Returns(Builder<BookFile>.CreateNew()
+                    .With(x => x.Path = track.Item.Path)
+                    .With(x => x.EditionId = 11)
+                    .Build());
+
+            var result = Subject.Import(new List<ImportDecision<LocalBook>> { track }, false, null, ImportMode.Auto);
+
+            result.Should().ContainSingle();
+            result.Single().Result.Should().Be(ImportResultType.Skipped);
+            result.Single().Errors.Should().Contain("Automatic scan skipped: existing file is already linked to another book");
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.Delete(It.IsAny<BookFile>(), DeleteMediaFileReason.ManualOverride), Times.Never());
+        }
+
+        [Test]
+        public void should_allow_existing_file_cross_book_relink_for_same_file_override()
+        {
+            var track = _approvedDecisions.First();
+            track.Item.ExistingFile = true;
+            track.Item.AllowSameFileMatch = true;
+            track.Item.Edition.Id = 10;
+
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(s => s.GetFileWithPath(It.IsAny<string>()))
+                .Returns(Builder<BookFile>.CreateNew()
+                    .With(x => x.Path = track.Item.Path)
+                    .With(x => x.EditionId = 11)
+                    .Build());
+
+            Subject.Import(new List<ImportDecision<LocalBook>> { track }, false, null, ImportMode.Auto);
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.Delete(It.IsAny<BookFile>(), DeleteMediaFileReason.ManualOverride), Times.Once());
+        }
     }
 }
