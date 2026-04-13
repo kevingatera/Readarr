@@ -271,7 +271,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                     return;
                 }
 
-                var tail = value[(index + separator.Length)..]
+                var tail = value.Substring(index + separator.Length)
                     .RemoveBracketsAndContents()
                     .Trim(' ', '-', '_', '.', ',', ':', ';');
 
