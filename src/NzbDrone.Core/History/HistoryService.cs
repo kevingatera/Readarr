@@ -210,11 +210,6 @@ namespace NzbDrone.Core.History
 
         public void Handle(TrackImportedEvent message)
         {
-            if (!message.NewDownload)
-            {
-                return;
-            }
-
             var downloadId = message.DownloadId;
 
             if (downloadId.IsNullOrWhiteSpace())
