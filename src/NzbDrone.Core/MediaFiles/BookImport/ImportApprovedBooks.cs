@@ -242,6 +242,13 @@ namespace NzbDrone.Core.MediaFiles.BookImport
 
                         if (previousFile != null)
                         {
+                            if (ShouldSkipAutomaticCrossBookRelink(localTrack, previousFile, bookFile, replaceExisting, downloadClientItem, importMode))
+                            {
+                                _logger.Warn("Skipping automatic cross-book relink for existing file {0}. Existing edition: {1}, attempted edition: {2}", bookFile.Path, previousFile.EditionId, bookFile.EditionId);
+                                importResults.Add(new ImportResult(importDecision, "Automatic scan skipped: existing file is already linked to another book"));
+                                continue;
+                            }
+
                             _mediaFileService.Delete(previousFile, DeleteMediaFileReason.ManualOverride);
 
                             if (bookFile.CalibreId == 0 && previousFile.CalibreId != 0)
@@ -608,6 +615,27 @@ namespace NzbDrone.Core.MediaFiles.BookImport
             }
 
             return null;
+        }
+
+        private static bool ShouldSkipAutomaticCrossBookRelink(LocalBook localTrack, BookFile previousFile, BookFile candidateFile, bool replaceExisting, DownloadClientItem downloadClientItem, ImportMode importMode)
+        {
+            if (previousFile == null || candidateFile == null || localTrack == null)
+            {
+                return false;
+            }
+
+            if (previousFile.EditionId == 0 || candidateFile.EditionId == 0 || previousFile.EditionId == candidateFile.EditionId)
+            {
+                return false;
+            }
+
+            // Automatic library scans should never silently steal an existing path from another book.
+            // Manual/same-file override paths can still reassign explicitly.
+            return localTrack.ExistingFile &&
+                   !localTrack.AllowSameFileMatch &&
+                   downloadClientItem == null &&
+                   importMode == ImportMode.Auto &&
+                   !replaceExisting;
         }
     }
 }
