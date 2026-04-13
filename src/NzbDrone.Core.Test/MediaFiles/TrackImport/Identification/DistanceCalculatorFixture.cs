@@ -138,6 +138,81 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
         }
 
         [Test]
+        public void should_recover_author_from_reversed_filename_when_tags_are_swapped()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "John Marrs" };
+
+            var book = new Book
+            {
+                Title = "The Family Experiment",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata)
+            };
+
+            var edition = new Edition
+            {
+                Title = "The Family Experiment",
+                Format = "Hardcover",
+                Asin = "B0CQRGVTG8",
+                Isbn13 = "9781335002891",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/The Family Experiment - John Marrs/The Family Experiment - John Marrs.m4b",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Authors = new List<string> { "The Family Experiment" },
+                        BookTitle = "John Marrs"
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().NotContain("author");
+            dist.NormalizedDistance().Should().BeLessThan(0.20);
+        }
+
+        [Test]
+        public void should_recover_author_from_by_separator_filename()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "John Marrs" };
+
+            var book = new Book
+            {
+                Title = "The Family Experiment",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata)
+            };
+
+            var edition = new Edition
+            {
+                Title = "The Family Experiment",
+                Format = "Hardcover",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/The Family Experiment by John Marrs/The Family Experiment by John Marrs.m4b",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Authors = new List<string>(),
+                        BookTitle = "The Family Experiment"
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().NotContain("author");
+        }
+
+        [Test]
         public void should_match_series_part_aliases_against_series_position()
         {
             var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };
