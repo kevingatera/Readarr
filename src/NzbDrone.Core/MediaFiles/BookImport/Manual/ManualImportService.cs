@@ -102,15 +102,18 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
 
                 if (trackedDownload == null)
                 {
-                    return new List<ManualImportItem>();
+                    _logger.Warn("Tracked download {0} was not available while loading manual import candidates", downloadId);
+                    downloadId = null;
                 }
-
-                if (trackedDownload.ImportItem == null)
+                else
                 {
-                    trackedDownload.ImportItem = _provideImportItemService.ProvideImportItem(trackedDownload.DownloadItem, trackedDownload.ImportItem);
-                }
+                    if (trackedDownload.ImportItem == null)
+                    {
+                        trackedDownload.ImportItem = _provideImportItemService.ProvideImportItem(trackedDownload.DownloadItem, trackedDownload.ImportItem);
+                    }
 
-                path = trackedDownload.ImportItem.OutputPath.FullPath;
+                    path = trackedDownload.ImportItem.OutputPath.FullPath;
+                }
             }
 
             if (!_diskProvider.FolderExists(path))
@@ -724,37 +727,30 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 }
 
                 var downloadId = importBookId.Select(x => x.DownloadId).FirstOrDefault(x => x.IsNotNullOrWhiteSpace());
-                if (downloadId.IsNullOrWhiteSpace())
+                var trackedDownload = ResolveTrackedDownload(importBookId.ToList(), downloadId);
+                var downloadClientItem = trackedDownload?.DownloadItem;
+
+                if (downloadClientItem == null && downloadId.IsNotNullOrWhiteSpace())
                 {
-                    imported.AddRange(_importApprovedBooks.Import(bookImportDecisions, message.ReplaceExistingFiles, null, message.ImportMode));
+                    _logger.Warn("Tracked download {0} was not available during manual import, importing without tracked download context", downloadId);
                 }
-                else
+
+                var importResults = _importApprovedBooks.Import(bookImportDecisions, message.ReplaceExistingFiles, downloadClientItem, message.ImportMode);
+
+                imported.AddRange(importResults);
+
+                if (downloadClientItem == null)
                 {
-                    var trackedDownload = _trackedDownloadService.Find(downloadId);
-                    var downloadClientItem = trackedDownload?.DownloadItem;
+                    continue;
+                }
 
-                    if (downloadClientItem == null)
+                foreach (var importResult in importResults)
+                {
+                    importedTrackedDownload.Add(new ManuallyImportedFile
                     {
-                        _logger.Warn("Tracked download {0} was not available during manual import, importing without tracked download context", downloadId);
-                    }
-
-                    var importResults = _importApprovedBooks.Import(bookImportDecisions, message.ReplaceExistingFiles, downloadClientItem, message.ImportMode);
-
-                    imported.AddRange(importResults);
-
-                    if (downloadClientItem == null)
-                    {
-                        continue;
-                    }
-
-                    foreach (var importResult in importResults)
-                    {
-                        importedTrackedDownload.Add(new ManuallyImportedFile
-                        {
-                            TrackedDownload = trackedDownload,
-                            ImportResult = importResult
-                        });
-                    }
+                        TrackedDownload = trackedDownload,
+                        ImportResult = importResult
+                    });
                 }
             }
 
@@ -796,6 +792,88 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                     }
                 }
             }
+        }
+
+        private TrackedDownload ResolveTrackedDownload(List<ManualImportFile> files, string downloadId)
+        {
+            if (downloadId.IsNotNullOrWhiteSpace())
+            {
+                return _trackedDownloadService.Find(downloadId);
+            }
+
+            return ResolveTrackedDownloadFromPaths(files.Select(x => x.Path).ToList());
+        }
+
+        private TrackedDownload ResolveTrackedDownloadFromPaths(List<string> filePaths)
+        {
+            var paths = filePaths
+                .Where(x => x.IsNotNullOrWhiteSpace())
+                .Distinct(PathEqualityComparer.Instance)
+                .ToList();
+
+            if (!paths.Any())
+            {
+                return null;
+            }
+
+            var trackedDownloads = _trackedDownloadService.GetTrackedDownloads();
+            var matches = trackedDownloads.Where(x => MatchesTrackedDownloadPath(x, paths)).ToList();
+
+            if (matches.Count == 1)
+            {
+                _logger.Debug("Resolved tracked download {0} from manual import path(s)", matches[0].DownloadItem?.DownloadId);
+                return matches[0];
+            }
+
+            if (matches.Count > 1)
+            {
+                _logger.Warn("Unable to resolve tracked download for manual import paths due to ambiguity ({0} matches)", matches.Count);
+            }
+
+            return null;
+        }
+
+        private bool MatchesTrackedDownloadPath(TrackedDownload trackedDownload, List<string> filePaths)
+        {
+            if (trackedDownload == null)
+            {
+                return false;
+            }
+
+            if (trackedDownload.ImportItem == null)
+            {
+                trackedDownload.ImportItem = _provideImportItemService.ProvideImportItem(trackedDownload.DownloadItem, trackedDownload.ImportItem);
+            }
+
+            var outputPath = trackedDownload.ImportItem?.OutputPath.FullPath;
+
+            if (outputPath.IsNullOrWhiteSpace())
+            {
+                outputPath = trackedDownload.DownloadItem?.OutputPath.FullPath;
+            }
+
+            if (outputPath.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            foreach (var filePath in filePaths)
+            {
+                if (outputPath.PathEquals(filePath) || outputPath.IsParentPath(filePath))
+                {
+                    return true;
+                }
+
+                var fileDirectory = Path.GetDirectoryName(filePath);
+
+                if (fileDirectory.IsNotNullOrWhiteSpace() &&
+                    outputPath.PathEquals(fileDirectory))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 }
