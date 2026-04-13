@@ -214,6 +214,48 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
+        public void should_fallback_to_path_scan_when_get_media_files_download_id_is_stale()
+        {
+            var folder = Path.GetDirectoryName(_filePath);
+
+            Mocker.GetMock<ITrackedDownloadService>()
+                .Setup(x => x.Find("stale-download-id"))
+                .Returns((TrackedDownload)null);
+
+            Mocker.GetMock<IDiskProvider>()
+                .Setup(x => x.FolderExists(folder))
+                .Returns(true);
+
+            Mocker.GetMock<IDiskScanService>()
+                .Setup(x => x.GetBookFiles(folder, true))
+                .Returns(new[] { _fileInfo });
+
+            Mocker.GetMock<IMakeImportDecision>()
+                .Setup(x => x.GetImportDecisions(It.IsAny<List<IFileInfo>>(),
+                                                It.IsAny<NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides>(),
+                                                It.IsAny<ImportDecisionMakerInfo>(),
+                                                It.IsAny<ImportDecisionMakerConfig>()))
+                .Returns(new List<ImportDecision<LocalBook>>
+                {
+                    new ImportDecision<LocalBook>(new LocalBook
+                    {
+                        Path = _filePath,
+                        Author = _author,
+                        Book = _book,
+                        Edition = _edition,
+                        Quality = new QualityModel(Quality.M4B),
+                        FileTrackInfo = new ParsedTrackInfo()
+                    })
+                });
+
+            var result = Subject.GetMediaFiles(folder, "stale-download-id", _author, FilterFilesType.None, false);
+
+            result.Should().HaveCount(1);
+            result[0].Path.Should().Be(_filePath);
+            result[0].DownloadId.Should().BeNullOrEmpty();
+        }
+
+        [Test]
         public void should_ignore_null_books_when_resolving_manual_import_overrides()
         {
             var folder = Path.GetDirectoryName(_filePath);
@@ -538,6 +580,55 @@ namespace NzbDrone.Core.Test.MediaFiles
 
             Mocker.GetMock<IDiskProvider>()
                 .Verify(x => x.DeleteFolder(It.IsAny<string>(), true), Times.Never());
+        }
+
+        [Test]
+        public void should_resolve_tracked_download_by_file_path_when_manual_import_download_id_missing()
+        {
+            var trackedDownload = new TrackedDownload
+            {
+                DownloadItem = new DownloadClientItem
+                {
+                    DownloadId = "tracked-by-path-id",
+                    OutputPath = new OsPath(Path.GetDirectoryName(_filePath)),
+                    CanMoveFiles = true
+                },
+                RemoteBook = new RemoteBook
+                {
+                    Books = new List<Book> { _book }
+                }
+            };
+
+            var command = new ManualImportCommand
+            {
+                Files = new List<ManualImportFile>
+                {
+                    new ManualImportFile
+                    {
+                        Path = _filePath,
+                        AuthorId = _author.Id,
+                        BookId = _book.Id,
+                        ForeignEditionId = _edition.ForeignEditionId,
+                        Quality = new QualityModel(Quality.M4B),
+                        DownloadId = null
+                    }
+                }
+            };
+
+            Mocker.GetMock<ITrackedDownloadService>()
+                .Setup(x => x.GetTrackedDownloads())
+                .Returns(new List<TrackedDownload> { trackedDownload });
+
+            Action act = () => Subject.Execute(command);
+
+            act.Should().NotThrow();
+            trackedDownload.State.Should().Be(TrackedDownloadState.Imported);
+
+            Mocker.GetMock<IImportApprovedBooks>()
+                .Verify(x => x.Import(It.IsAny<List<ImportDecision<LocalBook>>>(), false, trackedDownload.DownloadItem, ImportMode.Auto), Times.Once());
+
+            Mocker.GetMock<IEventAggregator>()
+                .Verify(x => x.PublishEvent(It.IsAny<DownloadCompletedEvent>()), Times.Once());
         }
     }
 }
