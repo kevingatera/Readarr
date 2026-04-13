@@ -239,6 +239,12 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             authors.AddRange(localTracks
                 .Select(x => Parser.Parser.ParseBookTitle(Path.GetFileName(Path.GetDirectoryName(x.Path) ?? string.Empty))?.AuthorName)
                 .Where(x => x.IsNotNullOrWhiteSpace()));
+            authors.AddRange(localTracks
+                .SelectMany(x => GetAuthorTailCandidates(Path.GetFileNameWithoutExtension(x.Path)))
+                .Where(x => x.IsNotNullOrWhiteSpace()));
+            authors.AddRange(localTracks
+                .SelectMany(x => GetAuthorTailCandidates(Path.GetFileName(Path.GetDirectoryName(x.Path) ?? string.Empty)))
+                .Where(x => x.IsNotNullOrWhiteSpace()));
 
             return GetAuthorVariants(authors
                     .Distinct(StringComparer.InvariantCultureIgnoreCase)
@@ -246,6 +252,41 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                 .Where(x => x.IsNotNullOrWhiteSpace())
                 .Distinct(StringComparer.InvariantCultureIgnoreCase)
                 .ToList();
+        }
+
+        private static IEnumerable<string> GetAuthorTailCandidates(string value)
+        {
+            if (value.IsNullOrWhiteSpace())
+            {
+                return Array.Empty<string>();
+            }
+
+            var candidates = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+
+            void AddFromSeparator(string separator)
+            {
+                var index = value.LastIndexOf(separator, StringComparison.InvariantCultureIgnoreCase);
+                if (index < 0)
+                {
+                    return;
+                }
+
+                var tail = value[(index + separator.Length)..]
+                    .RemoveBracketsAndContents()
+                    .Trim(' ', '-', '_', '.', ',', ':', ';');
+
+                if (tail.IsNotNullOrWhiteSpace())
+                {
+                    candidates.Add(tail);
+                }
+            }
+
+            AddFromSeparator(" - ");
+            AddFromSeparator(" – ");
+            AddFromSeparator(" — ");
+            AddFromSeparator(" by ");
+
+            return candidates;
         }
 
         private static List<string> GetTitleCandidates(List<LocalBook> localTracks)
