@@ -145,16 +145,25 @@ namespace NzbDrone.Core.Profiles.Metadata
         private List<Book> FilterBooks(IEnumerable<Book> remoteBooks, List<Book> localBooks, List<BookFile> localFiles, Dictionary<Book, List<SeriesBookLink>> seriesLinks, int metadataProfileId)
         {
             var profile = Get(metadataProfileId);
+            var remoteBooksList = remoteBooks.ToList();
 
-            _logger.Trace($"Filtering:\n{remoteBooks.Select(x => x.ToString()).Join("\n")}");
+            _logger.Trace($"Filtering:\n{remoteBooksList.Select(x => x.ToString()).Join("\n")}");
 
-            var hash = new HashSet<Book>(remoteBooks);
-            var titles = new HashSet<string>(remoteBooks.Select(x => x.Title));
+            var hash = new HashSet<Book>(remoteBooksList);
+            var titles = new HashSet<string>(remoteBooksList.Select(x => x.Title));
 
             var localHash = new HashSet<string>(localBooks.Where(x => x.AddOptions.AddType == BookAddType.Manual).Select(x => x.ForeignBookId));
             localHash.UnionWith(localFiles.Select(x => x.Edition.Value.Book.Value.ForeignBookId));
 
-            FilterByPredicate(hash, x => x.ForeignBookId, localHash, profile, BookAllowedByRating, "rating criteria not met");
+            if (ShouldFilterBooksByRating(remoteBooksList, profile))
+            {
+                FilterByPredicate(hash, x => x.ForeignBookId, localHash, profile, BookAllowedByRating, "rating criteria not met");
+            }
+            else
+            {
+                _logger.Debug("Skipping popularity filtering for author refresh because no remote books have rating votes");
+            }
+
             FilterByPredicate(hash, x => x.ForeignBookId, localHash, profile, (x, p) => !p.SkipMissingDate || x.ReleaseDate.HasValue, "release date is missing");
             FilterByPredicate(hash, x => x.ForeignBookId, localHash, profile, (x, p) => !p.SkipPartsAndSets || !IsPartOrSet(x, seriesLinks.GetValueOrDefault(x), titles), "book is part of set");
             FilterByPredicate(hash, x => x.ForeignBookId, localHash, profile, (x, p) => !p.SkipSeriesSecondary || !seriesLinks.ContainsKey(x) || seriesLinks[x].Any(y => y.IsPrimary), "book is a secondary series item");
@@ -171,6 +180,16 @@ namespace NzbDrone.Core.Profiles.Metadata
             FilterByPredicate(hash, x => x.ForeignBookId, localHash, profile, (x, p) => x.Editions.Value.Any(), "all editions filtered out");
 
             return hash.ToList();
+        }
+
+        private bool ShouldFilterBooksByRating(List<Book> remoteBooks, MetadataProfile profile)
+        {
+            if (profile.MinPopularity == NONE_PROFILE_MIN_POPULARITY)
+            {
+                return true;
+            }
+
+            return remoteBooks.Any(x => x.Ratings?.Votes > 0);
         }
 
         private List<Edition> FilterEditions(IEnumerable<Edition> editions, List<Edition> localEditions, List<BookFile> localFiles, MetadataProfile profile)
