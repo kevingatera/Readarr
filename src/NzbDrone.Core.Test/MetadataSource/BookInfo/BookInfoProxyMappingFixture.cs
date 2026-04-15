@@ -202,6 +202,90 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
             author.Books.Value[0].SeriesLinks.Value[0].Series.Value.ForeignSeriesId.Should().Be("213397");
         }
 
+        [Test]
+        public void should_find_missing_series_work_ids_not_present_in_author_works()
+        {
+            var authorResource = new AuthorResource
+            {
+                ForeignId = 1,
+                Name = "Author",
+                Works = new List<WorkResource>
+                {
+                    new WorkResource { ForeignId = 10, Title = "Known Work" }
+                },
+                Series = new List<SeriesResource>
+                {
+                    new SeriesResource
+                    {
+                        ForeignId = 50,
+                        Title = "Series",
+                        LinkItems = new List<SeriesWorkLinkResource>
+                        {
+                            new SeriesWorkLinkResource { ForeignWorkId = 10, PositionInSeries = "1", SeriesPosition = 1, Primary = true },
+                            new SeriesWorkLinkResource { ForeignWorkId = 20, PositionInSeries = "2", SeriesPosition = 2, Primary = true },
+                            new SeriesWorkLinkResource { ForeignWorkId = 0, PositionInSeries = "x", SeriesPosition = 0, Primary = false }
+                        }
+                    }
+                }
+            };
+
+            var missing = InvokePrivateStatic<List<int>>("GetMissingSeriesWorkIds", authorResource);
+
+            missing.Should().BeEquivalentTo(new[] { 20 });
+        }
+
+        [Test]
+        public void should_merge_only_series_supplemental_works_for_the_same_author()
+        {
+            var authorResource = new AuthorResource
+            {
+                ForeignId = 1,
+                Name = "Author",
+                Works = new List<WorkResource>
+                {
+                    new WorkResource
+                    {
+                        ForeignId = 10,
+                        Title = "Known Work",
+                        Authors = new List<AuthorResource>
+                        {
+                            new AuthorResource { ForeignId = 1, Name = "Author" }
+                        }
+                    }
+                },
+                Series = new List<SeriesResource>()
+            };
+
+            var supplemental = new List<WorkResource>
+            {
+                new WorkResource
+                {
+                    ForeignId = 20,
+                    Title = "Series Missing Work",
+                    Authors = new List<AuthorResource>
+                    {
+                        new AuthorResource { ForeignId = 1, Name = "Author" }
+                    }
+                },
+                new WorkResource
+                {
+                    ForeignId = 30,
+                    Title = "Other Author Work",
+                    Authors = new List<AuthorResource>
+                    {
+                        new AuthorResource { ForeignId = 2, Name = "Someone Else" }
+                    }
+                }
+            };
+
+            InvokePrivateStatic<object>("MergeSeriesSupplementalWorks", authorResource, supplemental, 1);
+
+            authorResource.Works.Should().HaveCount(2);
+            authorResource.Works.Should().Contain(x => x.ForeignId == 10);
+            authorResource.Works.Should().Contain(x => x.ForeignId == 20);
+            authorResource.Works.Should().NotContain(x => x.ForeignId == 30);
+        }
+
         private static T InvokePrivateStatic<T>(string methodName, params object[] args)
         {
             var method = typeof(BookInfoProxy).GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static);
