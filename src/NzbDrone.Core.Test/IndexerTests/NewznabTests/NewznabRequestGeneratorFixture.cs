@@ -100,5 +100,22 @@ namespace NzbDrone.Core.Test.IndexerTests.NewznabTests
             pageTier.Url.Query.Should().NotContain(" & ");
             pageTier.Url.Query.Should().NotContain("%26");
         }
+
+        [Test]
+        public void should_add_fallback_search_tiers_for_titles_with_trailing_bracketed_parts()
+        {
+            _capabilities.SupportedBookSearchParameters = new[] { "q", "author", "title" };
+            _singleBookSearchCriteria.BookTitle = "All Systems Red [Dramatized Adaptation]";
+
+            var results = Subject.GetSearchRequests(_singleBookSearchCriteria);
+
+            results.Tiers.Should().Be(4);
+
+            var fallbackTier = results.GetTier(2).First().First();
+            fallbackTier.Url.Query.Should().Contain("q=All%20Systems%20Red+Alien%20Ant%20Farm");
+
+            var fallbackBookOnlyTier = results.GetTier(3).First().First();
+            fallbackBookOnlyTier.Url.Query.Should().Contain("q=All%20Systems%20Red");
+        }
     }
 }

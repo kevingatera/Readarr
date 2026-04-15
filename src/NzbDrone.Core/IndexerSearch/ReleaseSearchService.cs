@@ -82,7 +82,9 @@ namespace NzbDrone.Core.IndexerSearch
 
             var searchSpec = Get<BookSearchCriteria>(author, new List<Book> { book }, userInvokedSearch, interactiveSearch);
 
-            searchSpec.BookTitle = book.Editions.Value.SingleOrDefault(x => x.Monitored).Title;
+            var monitoredEdition = book.Editions.Value.SingleOrDefault(x => x.Monitored);
+            var searchEdition = monitoredEdition ?? book.Editions.Value.FirstOrDefault();
+            searchSpec.BookTitle = searchEdition?.Title ?? book.Title;
 
             // searchSpec.BookIsbn = book.Isbn13;
             if (book.ReleaseDate.HasValue)
