@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Abstractions;
@@ -379,6 +380,69 @@ namespace NzbDrone.Core.Test.MediaFiles
             capturedOverrides.Should().NotBeNull();
             capturedOverrides.Book.Should().NotBeNull();
             capturedOverrides.Book.Id.Should().Be(42);
+        }
+
+        [Test]
+        public void should_use_most_recent_history_book_override_when_download_was_grabbed_for_duplicate_books()
+        {
+            var oldDuplicateBook = new Book
+            {
+                Id = 42,
+                Title = "The Only Girl Left Alive",
+                Author = null
+            };
+
+            var currentBook = new Book
+            {
+                Id = 43,
+                Title = "The Only Girl Left Alive",
+                Author = null
+            };
+
+            _trackedDownload.DownloadItem.Title = "Susan Lund - The Only Girl Left Alive The McClintock-Carter Crime Thriller Trilogy, Book Three";
+
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.Find(_trackedDownload.DownloadItem.DownloadId, EntityHistoryEventType.Grabbed))
+                .Returns(new List<EntityHistory>
+                {
+                    new EntityHistory
+                    {
+                        BookId = oldDuplicateBook.Id,
+                        SourceTitle = "The Only Girl Left Alive by Susan Lund",
+                        Date = new DateTime(2026, 3, 15)
+                    },
+                    new EntityHistory
+                    {
+                        BookId = currentBook.Id,
+                        SourceTitle = "The Only Girl Left Alive by Susan Lund",
+                        Date = new DateTime(2026, 5, 1)
+                    }
+                });
+
+            Mocker.GetMock<IBookService>()
+                .Setup(s => s.GetBook(oldDuplicateBook.Id))
+                .Returns(oldDuplicateBook);
+
+            Mocker.GetMock<IBookService>()
+                .Setup(s => s.GetBook(currentBook.Id))
+                .Returns(currentBook);
+
+            IdentificationOverrides capturedOverrides = null;
+
+            Mocker.GetMock<IMakeImportDecision>()
+                .Setup(v => v.GetImportDecisions(It.IsAny<List<IFileInfo>>(), It.IsAny<IdentificationOverrides>(), It.IsAny<ImportDecisionMakerInfo>(), It.IsAny<ImportDecisionMakerConfig>()))
+                .Callback<List<IFileInfo>, IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((files, idOverrides, info, config) => capturedOverrides = idOverrides)
+                .Returns(new List<ImportDecision<LocalBook>>());
+
+            Mocker.GetMock<IImportApprovedBooks>()
+                .Setup(s => s.Import(It.IsAny<List<ImportDecision<LocalBook>>>(), It.IsAny<bool>(), It.IsAny<DownloadClientItem>(), It.IsAny<ImportMode>()))
+                .Returns(new List<ImportResult>());
+
+            Subject.ProcessPath(_droneFactory, ImportMode.Auto, _trackedDownload.RemoteBook.Author, _trackedDownload.DownloadItem);
+
+            capturedOverrides.Should().NotBeNull();
+            capturedOverrides.Book.Should().NotBeNull();
+            capturedOverrides.Book.Id.Should().Be(currentBook.Id);
         }
 
         [Test]
