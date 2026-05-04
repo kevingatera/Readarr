@@ -573,6 +573,46 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
         }
 
         [Test]
+        public void should_soften_author_penalty_when_audio_author_tag_is_title_fragment()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Lisa Kleypas" };
+
+            var book = new Book
+            {
+                Title = "Christmas Eve at Friday Harbor",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata)
+            };
+
+            var edition = new Edition
+            {
+                Title = "Christmas Eve at Friday Harbor",
+                Format = "Audible Audio",
+                Asin = "B004G8QYMO",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/Christmas Eve at Friday Harbor.mp3",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "Christmas Eve at Friday Harbor",
+                        BookTitle = "Friday",
+                        Authors = new List<string> { "Christmas Eve at" }
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().NotContain("author");
+            dist.Reasons.Should().NotContain("book");
+            dist.NormalizedDistance().Should().BeLessThan(0.20);
+        }
+
+        [Test]
         public void should_keep_ebook_format_penalties_for_wrong_audiobook_candidate()
         {
             var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };

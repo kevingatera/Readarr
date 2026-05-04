@@ -96,9 +96,11 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
 
         public List<ManualImportItem> GetMediaFiles(string path, string downloadId, Author author, FilterFilesType filter, bool replaceExistingFiles)
         {
+            TrackedDownload trackedDownload = null;
+
             if (downloadId.IsNotNullOrWhiteSpace())
             {
-                var trackedDownload = _trackedDownloadService.Find(downloadId);
+                trackedDownload = _trackedDownloadService.Find(downloadId);
 
                 if (trackedDownload == null)
                 {
@@ -107,6 +109,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 }
                 else
                 {
+                    author ??= trackedDownload.RemoteBook?.Author;
+
                     if (trackedDownload.ImportItem == null)
                     {
                         trackedDownload.ImportItem = _provideImportItemService.ProvideImportItem(trackedDownload.DownloadItem, trackedDownload.ImportItem);
@@ -124,10 +128,11 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 }
 
                 var files = new List<IFileInfo> { _diskProvider.GetFileInfo(path) };
-                author = author ?? _parsingService.GetAuthor(Path.GetFileNameWithoutExtension(path));
+                author ??= trackedDownload?.RemoteBook?.Author ?? _parsingService.GetAuthor(Path.GetFileNameWithoutExtension(path));
 
                 var itemInfo = new ImportDecisionMakerInfo
                 {
+                    DownloadClientItem = trackedDownload?.DownloadItem,
                     ParsedBookInfo = Parser.Parser.ParseBookTitle(Path.GetFileNameWithoutExtension(path))
                 };
                 var idOverrides = ResolveIdentificationOverrides(author, files, itemInfo);
