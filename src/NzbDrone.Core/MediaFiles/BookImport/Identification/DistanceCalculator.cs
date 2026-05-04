@@ -197,8 +197,9 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
 
             // try to tilt it towards the correct "type" of release
             var isAudio = MediaFileExtensions.AudioExtensions.Contains(localTracks.First().Path.GetPathExtension());
-            var ignoreFormatPenalty = dist.NormalizedDistance() <= IgnoreFormatPenaltyThreshold ||
-                                      (isAudio && strongTitleMatch && IsMetadataPoorAudio(localTracks) && shouldSoftenAuthorPenalty);
+            var ignoreFormatPenalty = strongTitleMatch &&
+                                      (dist.NormalizedDistance() <= IgnoreFormatPenaltyThreshold ||
+                                       (isAudio && IsMetadataPoorAudio(localTracks) && shouldSoftenAuthorPenalty));
 
             if (edition.Format.IsNotNullOrWhiteSpace())
             {
@@ -655,7 +656,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             var parts = new List<(string Stem, int Number)>();
             foreach (var localTrack in localTracks)
             {
-                var candidate = HumanizeAudioTitleCandidate(Path.GetFileNameWithoutExtension(localTrack.Path));
+                var candidate = CamelCaseBoundaryRegex.Replace(Path.GetFileNameWithoutExtension(localTrack.Path), " ")
+                    .Trim(' ', '-', '_', '.', ',', ':', ';');
                 var match = TrailingTrackPartRegex.Match(candidate);
                 if (!match.Success || !int.TryParse(match.Groups["number"].Value, out var number))
                 {
