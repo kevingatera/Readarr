@@ -305,7 +305,18 @@ namespace NzbDrone.Core.Books
                 return false;
             }
 
-            return (remoteBook.RelatedBooks ?? new List<int>()).Contains(localForeignBookId);
+            if ((remoteBook.RelatedBooks ?? new List<int>()).Contains(localForeignBookId))
+            {
+                return true;
+            }
+
+            if (TryParseForeignBookId(remoteBook.ForeignBookId, out var remoteForeignBookId) &&
+                (localBook.RelatedBooks ?? new List<int>()).Contains(remoteForeignBookId))
+            {
+                return true;
+            }
+
+            return false;
         }
 
         private static bool HasCompatibleIdentity(Book left, Book right)

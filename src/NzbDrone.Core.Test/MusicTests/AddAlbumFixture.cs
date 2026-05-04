@@ -144,5 +144,67 @@ namespace NzbDrone.Core.Test.MusicTests
             book.AddOptions.Should().NotBeNull();
             book.AddOptions.AddType.Should().Be(BookAddType.Manual);
         }
+
+        [Test]
+        public void should_reuse_existing_equivalent_book_when_related_id_is_on_local_book()
+        {
+            var newBook = BookToAdd("247146569", "278243734", _fakeAuthor.Metadata.Value.ForeignAuthorId);
+
+            _fakeBook = Builder<Book>
+                .CreateNew()
+                .With(x => x.ForeignBookId = "278243734")
+                .With(x => x.Title = "Ground State")
+                .With(x => x.CleanTitle = "groundstate")
+                .With(x => x.ReleaseDate = new DateTime(2026, 1, 27))
+                .With(x => x.RelatedBooks = new List<int>())
+                .With(x => x.Editions = Builder<Edition>
+                    .CreateListOfSize(1)
+                    .TheFirst(1)
+                    .With(e => e.ForeignEditionId = "247146569")
+                    .With(e => e.Format = "Kindle Edition")
+                    .With(e => e.Monitored = true)
+                    .BuildList())
+                .Build();
+
+            var existingBook = Builder<Book>
+                .CreateNew()
+                .With(x => x.Id = 15103)
+                .With(x => x.AuthorMetadataId = _fakeAuthor.AuthorMetadataId)
+                .With(x => x.ForeignBookId = "261580815")
+                .With(x => x.Title = "Ground State")
+                .With(x => x.CleanTitle = "groundstate")
+                .With(x => x.ReleaseDate = new DateTime(2026, 1, 27))
+                .With(x => x.RelatedBooks = new List<int> { 278243734 })
+                .With(x => x.Editions = Builder<Edition>
+                    .CreateListOfSize(1)
+                    .TheFirst(1)
+                    .With(e => e.ForeignEditionId = "241936481")
+                    .With(e => e.Format = "Audible Audio")
+                    .With(e => e.Monitored = true)
+                    .BuildList())
+                .Build();
+
+            Mocker.GetMock<IProvideBookInfo>()
+                .Setup(s => s.GetBookInfo("278243734"))
+                .Returns(Tuple.Create(_fakeAuthor.Metadata.Value.ForeignAuthorId,
+                                      _fakeBook,
+                                      new List<AuthorMetadata> { _fakeAuthor.Metadata.Value }));
+
+            Mocker.GetMock<IAuthorService>()
+                .Setup(s => s.FindById(_fakeAuthor.Metadata.Value.ForeignAuthorId))
+                .Returns(_fakeAuthor);
+
+            Mocker.GetMock<IBookService>()
+                .Setup(s => s.GetBooksByAuthorMetadataId(_fakeAuthor.AuthorMetadataId))
+                .Returns(new List<Book> { existingBook });
+
+            var book = Subject.AddBook(newBook);
+
+            book.Id.Should().Be(existingBook.Id);
+            book.ForeignBookId.Should().Be(existingBook.ForeignBookId);
+
+            Mocker.GetMock<IBookService>()
+                .Verify(s => s.AddBook(It.IsAny<Book>(), It.IsAny<bool>()), Times.Never());
+        }
     }
 }

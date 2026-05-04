@@ -6,6 +6,7 @@ using FluentValidation.Results;
 using NLog;
 using NzbDrone.Core.Exceptions;
 using NzbDrone.Core.ImportLists.Exclusions;
+using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MetadataSource;
 
 namespace NzbDrone.Core.Books
@@ -23,6 +24,7 @@ namespace NzbDrone.Core.Books
         private readonly IBookService _bookService;
         private readonly IProvideBookInfo _bookInfo;
         private readonly IImportListExclusionService _importListExclusionService;
+        private readonly IMediaFileService _mediaFileService;
         private readonly Logger _logger;
 
         public AddBookService(IAuthorService authorService,
@@ -30,6 +32,7 @@ namespace NzbDrone.Core.Books
                                IBookService bookService,
                                IProvideBookInfo bookInfo,
                                IImportListExclusionService importListExclusionService,
+                               IMediaFileService mediaFileService,
                                Logger logger)
         {
             _authorService = authorService;
@@ -37,6 +40,7 @@ namespace NzbDrone.Core.Books
             _bookService = bookService;
             _bookInfo = bookInfo;
             _importListExclusionService = importListExclusionService;
+            _mediaFileService = mediaFileService;
             _logger = logger;
         }
 
@@ -75,9 +79,36 @@ namespace NzbDrone.Core.Books
 
             book.Author = dbAuthor;
             book.AuthorMetadataId = dbAuthor.AuthorMetadataId;
+
+            var equivalentBook = FindEquivalentExistingBook(book, dbAuthor.AuthorMetadataId);
+            if (equivalentBook != null && equivalentBook.Id != book.Id)
+            {
+                _logger.Info("Book {0} is equivalent to existing book {1}; using existing book instead of adding duplicate.", book, equivalentBook);
+                return equivalentBook;
+            }
+
             _bookService.AddBook(book, doRefresh);
 
             return book;
+        }
+
+        private Book FindEquivalentExistingBook(Book book, int authorMetadataId)
+        {
+            var localBooks = (_bookService.GetBooksByAuthorMetadataId(authorMetadataId) ?? new List<Book>())
+                                         .Where(x => x.Id != book.Id)
+                                         .ToList();
+
+            if (!localBooks.Any())
+            {
+                return null;
+            }
+
+            var fileCounts = (_mediaFileService.GetFilesByAuthorMetadataId(authorMetadataId) ?? new List<BookFile>())
+                                              .Where(x => x.Edition?.Value?.Book?.Value != null)
+                                              .GroupBy(x => x.Edition.Value.Book.Value.Id)
+                                              .ToDictionary(x => x.Key, x => x.Count());
+
+            return EquivalentBookMergeHelper.FindMatchingLocalBook(localBooks, book, fileCounts).Item1;
         }
 
         public List<Book> AddBooks(List<Book> books, bool doRefresh = true)
