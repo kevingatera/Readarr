@@ -389,32 +389,37 @@ namespace NzbDrone.Core.MediaFiles
             var grabbedHistory = _historyService.Find(downloadClientItem.DownloadId, EntityHistoryEventType.Grabbed);
 
             var grabbedBookIds = grabbedHistory
+                .OrderByDescending(h => h.Date)
                 .Select(h => h.BookId)
                 .Where(id => id > 0)
                 .Distinct()
                 .ToList();
 
-            if (grabbedBookIds.Count != 1)
+            if (grabbedBookIds.Count == 0)
             {
                 return null;
             }
 
-            try
+            foreach (var grabbedBookId in grabbedBookIds)
             {
-                var historyBook = _bookService.GetBook(grabbedBookIds[0]);
-                if (!IsHistoryBookOverrideConsistent(historyBook, grabbedHistory, downloadClientItem, titleHints))
+                try
                 {
-                    _logger.Debug("Skipping history book override for downloadId={0}; override book '{1}' does not match current title hints", downloadClientItem.DownloadId, historyBook?.Title);
-                    return null;
-                }
+                    var historyBook = _bookService.GetBook(grabbedBookId);
+                    if (!IsHistoryBookOverrideConsistent(historyBook, grabbedHistory, downloadClientItem, titleHints))
+                    {
+                        _logger.Debug("Skipping history book override for downloadId={0}; override book '{1}' does not match current title hints", downloadClientItem.DownloadId, historyBook?.Title);
+                        continue;
+                    }
 
-                return historyBook;
+                    return historyBook;
+                }
+                catch (Exception e)
+                {
+                    _logger.Debug(e, "Unable to load history book override for downloadId={0}", downloadClientItem.DownloadId);
+                }
             }
-            catch (Exception e)
-            {
-                _logger.Debug(e, "Unable to load history book override for downloadId={0}", downloadClientItem.DownloadId);
-                return null;
-            }
+
+            return null;
         }
 
         private bool IsHistoryBookOverrideConsistent(Book historyBook, List<EntityHistory> grabbedHistory, DownloadClientItem downloadClientItem, IEnumerable<string> titleHints)
