@@ -29,6 +29,9 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
         private static readonly RegexReplace LeadingPartNumber = new RegexReplace(@"^\s*(?:(?:book|part|pt|chapter|disc|cd|track)\s*)?(?:\d+|[ivxlcdm]+)\s*[-._:)]*\s+", string.Empty, RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex SeriesPartRegex = new Regex(@"\b(?:book|part|pt)\s*(?<number>\d+(?:\.\d+)?|[ivxlcdm]+)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex LeadingPartRegex = new Regex(@"^\s*(?:(?:book|part|pt|chapter|disc|cd|track)\s*)?(?<number>\d+(?:\.\d+)?|[ivxlcdm]+)\s*[-._:)]*\s+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex CamelCaseBoundaryRegex = new Regex(@"(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])", RegexOptions.Compiled);
+        private static readonly Regex AudioPartSuffixRegex = new Regex(@"\b(?:unabridged\s*)?(?:part|pt)\s*\d+\s*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex TrailingTrackPartRegex = new Regex(@"^(?<stem>.+?)\s+(?:part|pt)\s*(?<number>\d+)\s*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly List<string> EbookFormats = new List<string> { "Kindle Edition", "Nook", "ebook" };
 
@@ -40,7 +43,9 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
 
             var authors = GetAuthorCandidates(localTracks);
 
-            dist.AddString("author", authors, edition.Book.Value.AuthorMetadata.Value.Name);
+            var authorName = edition.Book.Value.AuthorMetadata.Value.Name;
+            var shouldSoftenAuthorPenalty = false;
+            dist.AddString("author", authors, authorName);
             Logger.Trace("author: '{0}' vs '{1}'; {2}", authors.ConcatToString("' or '"), edition.Book.Value.AuthorMetadata.Value.Name, dist.NormalizedDistance());
 
             var titleOptions = new List<string> { edition.Title };
@@ -74,11 +79,27 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             }
 
             var fileTitles = GetTitleCandidates(localTracks);
+            var strongTitleMatch = HasStrongTitleMatch(fileTitles, titleOptions);
+
+            if (ShouldSoftenAuthorPenalty(localTracks, authors, titleOptions, authorName, strongTitleMatch))
+            {
+                // Re-score title-only audiobook matches without treating absent or title-like
+                // author tags as strong negative evidence.
+                dist.Penalties.Remove("author");
+                dist.Add("author", 0.0);
+                shouldSoftenAuthorPenalty = true;
+                Logger.Trace("author: softened metadata-poor audiobook author penalty; {0}", dist.NormalizedDistance());
+            }
 
             dist.AddString("book", fileTitles, titleOptions);
             Logger.Trace("book: '{0}' vs '{1}'; {2}", fileTitles.ConcatToString("' or '"), titleOptions.ConcatToString("' or '"), dist.NormalizedDistance());
 
             var localPartNumbers = ParsePartNumbers(fileTitles);
+            if (ShouldIgnoreSequentialTrackPartNumbers(localTracks))
+            {
+                localPartNumbers = ParsePartNumbers(GetReleaseLevelTitleCandidates(localTracks));
+            }
+
             var editionPartNumbers = GetEditionPartNumbers(edition);
             if (localPartNumbers.Any() && editionPartNumbers.Any())
             {
@@ -176,7 +197,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
 
             // try to tilt it towards the correct "type" of release
             var isAudio = MediaFileExtensions.AudioExtensions.Contains(localTracks.First().Path.GetPathExtension());
-            var ignoreFormatPenalty = dist.NormalizedDistance() <= IgnoreFormatPenaltyThreshold;
+            var ignoreFormatPenalty = dist.NormalizedDistance() <= IgnoreFormatPenaltyThreshold ||
+                                      (isAudio && strongTitleMatch && IsMetadataPoorAudio(localTracks) && shouldSoftenAuthorPenalty);
 
             if (edition.Format.IsNotNullOrWhiteSpace())
             {
@@ -345,6 +367,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             Add(LeadingPartNumber.Replace(cleanedTitle));
             Add(title.RemoveBracketsAndContents());
             Add(title.RemoveAfterDash());
+            Add(HumanizeAudioTitleCandidate(title));
+            Add(HumanizeAudioTitleCandidate(cleanedTitle));
 
             if (title.Contains(" - ", StringComparison.Ordinal))
             {
@@ -354,6 +378,19 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             }
 
             return candidates;
+        }
+
+        private static string HumanizeAudioTitleCandidate(string title)
+        {
+            if (title.IsNullOrWhiteSpace())
+            {
+                return string.Empty;
+            }
+
+            var spaced = CamelCaseBoundaryRegex.Replace(title, " ");
+            spaced = AudioPartSuffixRegex.Replace(spaced, string.Empty);
+            spaced = CleanTitleCruft.Replace(spaced);
+            return spaced.Trim(' ', '-', '_', '.', ',', ':', ';');
         }
 
         private static void AddSeriesPartTitleOptions(List<string> titleOptions, string seriesName, string position)
@@ -502,6 +539,55 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             return HasStrongTitleMatch(fileTitles, titleOptions);
         }
 
+        private static bool ShouldSoftenAuthorPenalty(List<LocalBook> localTracks, List<string> authors, List<string> titleOptions, string targetAuthor, bool strongTitleMatch)
+        {
+            if (!strongTitleMatch || !IsMetadataPoorAudio(localTracks))
+            {
+                return false;
+            }
+
+            if (!authors.Any())
+            {
+                return true;
+            }
+
+            foreach (var author in authors.Where(x => x.IsNotNullOrWhiteSpace()))
+            {
+                if (IsCloseNormalizedMatch(author, targetAuthor, 0.80))
+                {
+                    return false;
+                }
+
+                if (titleOptions.Any(title => IsCloseNormalizedMatch(author, title, 0.80)))
+                {
+                    continue;
+                }
+
+                if (author.Equals("unknown", StringComparison.InvariantCultureIgnoreCase) ||
+                    author.Equals("unknown author", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    continue;
+                }
+
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsMetadataPoorAudio(List<LocalBook> localTracks)
+        {
+            if (!localTracks.Any() || !MediaFileExtensions.AudioExtensions.Contains(localTracks.First().Path.GetPathExtension()))
+            {
+                return false;
+            }
+
+            return !localTracks.Any(x =>
+                x.FileTrackInfo?.Asin.IsNotNullOrWhiteSpace() == true ||
+                x.FileTrackInfo?.Isbn.IsNotNullOrWhiteSpace() == true ||
+                x.FileTrackInfo?.GoodreadsId.IsNotNullOrWhiteSpace() == true);
+        }
+
         private static bool HasStrongTitleMatch(List<string> fileTitles, List<string> titleOptions)
         {
             foreach (var fileTitle in fileTitles)
@@ -539,6 +625,72 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             }
 
             return false;
+        }
+
+        private static bool IsCloseNormalizedMatch(string value, string target, double threshold)
+        {
+            var normalizedValue = Parser.Parser.NormalizeTitle(value);
+            var normalizedTarget = Parser.Parser.NormalizeTitle(target);
+
+            if (normalizedValue.IsNullOrWhiteSpace() || normalizedTarget.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            if (normalizedValue.Equals(normalizedTarget, StringComparison.InvariantCultureIgnoreCase))
+            {
+                return true;
+            }
+
+            return normalizedValue.LevenshteinCoefficient(normalizedTarget) >= threshold;
+        }
+
+        private static bool ShouldIgnoreSequentialTrackPartNumbers(List<LocalBook> localTracks)
+        {
+            if (localTracks.Count <= 1)
+            {
+                return false;
+            }
+
+            var parts = new List<(string Stem, int Number)>();
+            foreach (var localTrack in localTracks)
+            {
+                var candidate = HumanizeAudioTitleCandidate(Path.GetFileNameWithoutExtension(localTrack.Path));
+                var match = TrailingTrackPartRegex.Match(candidate);
+                if (!match.Success || !int.TryParse(match.Groups["number"].Value, out var number))
+                {
+                    return false;
+                }
+
+                parts.Add((Parser.Parser.NormalizeTitle(match.Groups["stem"].Value), number));
+            }
+
+            var stems = parts.Select(x => x.Stem).Where(x => x.IsNotNullOrWhiteSpace()).Distinct(StringComparer.InvariantCultureIgnoreCase).ToList();
+            if (stems.Count != 1)
+            {
+                return false;
+            }
+
+            var numbers = parts.Select(x => x.Number).Distinct().OrderBy(x => x).ToList();
+            return numbers.Count > 1 && numbers.First() == 1 && numbers.Last() == numbers.Count;
+        }
+
+        private static List<string> GetReleaseLevelTitleCandidates(List<LocalBook> localTracks)
+        {
+            var rawTitles = new List<string>
+            {
+                localTracks.MostCommon(x => x.FileTrackInfo.BookTitle),
+                localTracks.MostCommon(x => x.FolderTrackInfo?.BookTitle),
+                localTracks.MostCommon(x => x.DownloadClientBookInfo?.BookTitle),
+                localTracks.MostCommon(x => Path.GetFileName(Path.GetDirectoryName(x.Path) ?? string.Empty))
+            };
+
+            return rawTitles
+                .Where(x => x.IsNotNullOrWhiteSpace())
+                .SelectMany(ExpandTitleCandidates)
+                .Where(x => x.IsNotNullOrWhiteSpace())
+                .Distinct(StringComparer.InvariantCultureIgnoreCase)
+                .ToList();
         }
 
         private static void AddPartIfUnique(List<double> partNumbers, double value)

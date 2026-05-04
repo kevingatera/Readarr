@@ -375,6 +375,204 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
         }
 
         [Test]
+        public void should_match_camel_cased_unabridged_part_files_for_metadata_poor_audiobook()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Lisa Kleypas" };
+
+            var book = new Book
+            {
+                Title = "Prince of Dreams",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata),
+                SeriesLinks = new LazyLoaded<List<SeriesBookLink>>(new List<SeriesBookLink>
+                {
+                    new SeriesBookLink
+                    {
+                        Position = "2",
+                        SeriesPosition = 2,
+                        Series = new LazyLoaded<Series>(new Series { Title = "The Stokehursts" })
+                    }
+                })
+            };
+
+            var edition = new Edition
+            {
+                Title = "Prince of Dreams",
+                Format = "Kindle Edition",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/Lisa Kleypas - Stokehurst 2 - Prince of Dreams v2/PrinceofDreamsUnabridgedPart1.mp3",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "PrinceofDreamsUnabridgedPart1",
+                        BookTitle = "PrinceofDreamsUnabridgedPart1",
+                        Authors = new List<string>()
+                    }
+                },
+                new LocalBook
+                {
+                    Path = "/downloads/complete/Lisa Kleypas - Stokehurst 2 - Prince of Dreams v2/PrinceofDreamsUnabridgedPart2.mp3",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "PrinceofDreamsUnabridgedPart2",
+                        BookTitle = "PrinceofDreamsUnabridgedPart2",
+                        Authors = new List<string>()
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().NotContain("author");
+            dist.Reasons.Should().NotContain("book");
+            dist.Reasons.Should().NotContain("audio format");
+            dist.Reasons.Should().NotContain("wrong format");
+            dist.NormalizedDistance().Should().BeLessThan(0.20);
+        }
+
+        [Test]
+        public void should_ignore_track_part_suffixes_for_multi_file_audiobook_series_matching()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Lisa Kleypas" };
+
+            var book = new Book
+            {
+                Title = "Dream Lake",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata),
+                SeriesLinks = new LazyLoaded<List<SeriesBookLink>>(new List<SeriesBookLink>
+                {
+                    new SeriesBookLink
+                    {
+                        Position = "3",
+                        SeriesPosition = 3,
+                        Series = new LazyLoaded<Series>(new Series { Title = "Friday Harbor" })
+                    }
+                })
+            };
+
+            var edition = new Edition
+            {
+                Title = "Dream Lake",
+                Format = "Kindle Edition",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/Lisa Kleypas - Dream Lake/Dream Lake Pt 1.mp3",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "Dream Lake Pt 1",
+                        BookTitle = "Dream Lake Pt 1",
+                        Authors = new List<string>()
+                    }
+                },
+                new LocalBook
+                {
+                    Path = "/downloads/complete/Lisa Kleypas - Dream Lake/Dream Lake Pt 2.mp3",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "Dream Lake Pt 2",
+                        BookTitle = "Dream Lake Pt 2",
+                        Authors = new List<string>()
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().NotContain("series part");
+            dist.Reasons.Should().NotContain("audio format");
+            dist.Reasons.Should().NotContain("wrong format");
+            dist.NormalizedDistance().Should().BeLessThan(0.20);
+        }
+
+        [Test]
+        public void should_ignore_ebook_format_penalties_when_exact_audio_title_lacks_author_tags()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Lisa Kleypas" };
+
+            var book = new Book
+            {
+                Title = "Marrying Winterborne",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata)
+            };
+
+            var edition = new Edition
+            {
+                Title = "Marrying Winterborne",
+                Format = "Kindle Edition",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/Marrying Winterborne/MarryingWinterborne.mp3",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "MarryingWinterborne",
+                        BookTitle = "MarryingWinterborne",
+                        Authors = new List<string>()
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().NotContain("author");
+            dist.Reasons.Should().NotContain("book");
+            dist.Reasons.Should().NotContain("audio format");
+            dist.Reasons.Should().NotContain("wrong format");
+            dist.NormalizedDistance().Should().BeLessThan(0.20);
+        }
+
+        [Test]
+        public void should_not_soften_author_penalty_when_audio_tags_name_conflicting_author()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Lisa Kleypas" };
+
+            var book = new Book
+            {
+                Title = "Dream Lake",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata)
+            };
+
+            var edition = new Edition
+            {
+                Title = "Dream Lake",
+                Format = "Kindle Edition",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/Dream Lake/DreamLake.mp3",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "DreamLake",
+                        BookTitle = "DreamLake",
+                        Authors = new List<string> { "Stephen King" }
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().Contain("author");
+            dist.NormalizedDistance().Should().BeGreaterThan(0.20);
+        }
+
+        [Test]
         public void should_keep_ebook_format_penalties_for_wrong_audiobook_candidate()
         {
             var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };
