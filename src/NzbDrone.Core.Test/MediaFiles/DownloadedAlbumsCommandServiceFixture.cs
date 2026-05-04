@@ -110,6 +110,31 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
+        public void should_recover_author_from_tracked_download_book_when_remote_author_is_missing()
+        {
+            var author = Builder<Author>.CreateNew()
+                .With(x => x.AuthorMetadataId = 42)
+                .Build();
+            var book = Builder<Book>.CreateNew()
+                .With(x => x.AuthorMetadataId = author.AuthorMetadataId)
+                .Build();
+
+            _trackedDownload.RemoteBook.Author = null;
+            _trackedDownload.RemoteBook.Books = new List<Book> { book };
+
+            Mocker.GetMock<IAuthorService>()
+                .Setup(x => x.GetAuthorByMetadataId(author.AuthorMetadataId))
+                .Returns(author);
+
+            GivenExistingFile(_downloadFile);
+            GivenValidQueueItem();
+
+            Subject.Execute(new DownloadedBooksScanCommand { Path = _downloadFile, DownloadClientId = "sab1" });
+
+            Mocker.GetMock<IDownloadedBooksImportService>().Verify(c => c.ProcessPath(_downloadFile, ImportMode.Auto, author, _trackedDownload.DownloadItem), Times.Once());
+        }
+
+        [Test]
         public void should_process_folder_without_downloadclientitem_if_not_available()
         {
             GivenExistingFolder(_downloadFolder);
