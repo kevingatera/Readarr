@@ -80,7 +80,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
 
             var httpResponse = _httpClient.Get<RecentUpdatesResource>(httpRequest);
 
-            if (httpResponse.Resource == null || httpResponse.Resource.Limited)
+            if (httpResponse.Resource == null || httpResponse.Resource.Limited || httpResponse.Resource.Ids == null)
             {
                 return null;
             }

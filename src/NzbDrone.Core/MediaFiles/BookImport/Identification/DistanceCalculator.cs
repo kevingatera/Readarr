@@ -559,7 +559,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                     return false;
                 }
 
-                if (titleOptions.Any(title => IsCloseNormalizedMatch(author, title, 0.80)))
+                if (titleOptions.Any(title => IsCloseNormalizedMatch(author, title, 0.80) ||
+                                              IsTitleFragment(author, title)))
                 {
                     continue;
                 }
@@ -644,6 +645,24 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             }
 
             return normalizedValue.LevenshteinCoefficient(normalizedTarget) >= threshold;
+        }
+
+        private static bool IsTitleFragment(string value, string target)
+        {
+            var normalizedValue = Parser.Parser.NormalizeTitle(value);
+            var normalizedTarget = Parser.Parser.NormalizeTitle(target);
+
+            if (normalizedValue.IsNullOrWhiteSpace() || normalizedTarget.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            if (normalizedValue.Length < 8)
+            {
+                return false;
+            }
+
+            return normalizedTarget.Contains(normalizedValue, StringComparison.InvariantCultureIgnoreCase);
         }
 
         private static bool ShouldIgnoreSequentialTrackPartNumbers(List<LocalBook> localTracks)
