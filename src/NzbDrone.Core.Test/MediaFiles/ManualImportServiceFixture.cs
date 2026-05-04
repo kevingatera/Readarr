@@ -477,15 +477,11 @@ namespace NzbDrone.Core.Test.MediaFiles
                     Books = new List<Book>
                     {
                         Builder<Book>.CreateNew()
-                            .With(x => x.AuthorMetadataId = _author.AuthorMetadataId)
+                            .With(x => x.Author = _author)
                             .Build()
                     }
                 }
             };
-
-            Mocker.GetMock<IAuthorService>()
-                .Setup(x => x.GetAuthorByMetadataId(_author.AuthorMetadataId))
-                .Returns(_author);
 
             Mocker.GetMock<ITrackedDownloadService>()
                 .Setup(x => x.Find(downloadItem.DownloadId))
