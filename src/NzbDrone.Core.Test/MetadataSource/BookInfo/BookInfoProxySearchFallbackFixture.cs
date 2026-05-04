@@ -59,6 +59,41 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
             result[1].Should().Be(book);
         }
 
+        [Test]
+        public void should_treat_changed_author_response_with_null_ids_as_unavailable()
+        {
+            var httpClient = new Mock<IHttpClient>();
+            httpClient
+                .Setup(x => x.Get<RecentUpdatesResource>(It.IsAny<HttpRequest>()))
+                .Returns<HttpRequest>(request => new HttpResponse<RecentUpdatesResource>(
+                    new HttpResponse(request, new HttpHeader { ContentType = "application/json" }, "{\"Limited\":false,\"Ids\":null}")));
+
+            var requestBuilder = new Mock<IMetadataRequestBuilder>();
+            requestBuilder
+                .Setup(x => x.GetRequestBuilder())
+                .Returns(new HttpRequestBuilder("http://metadata.invalid/{route}").CreateFactory());
+
+            var cacheManager = new Mock<ICacheManager>();
+            cacheManager
+                .Setup(x => x.GetCache<HashSet<string>>(It.IsAny<Type>()))
+                .Returns(new Mock<ICached<HashSet<string>>>().Object);
+
+            var subject = new BookInfoProxy(
+                httpClient.Object,
+                Mock.Of<ICachedHttpResponseService>(),
+                Mock.Of<IGoodreadsSearchProxy>(),
+                Mock.Of<IAuthorService>(),
+                Mock.Of<IBookService>(),
+                Mock.Of<IEditionService>(),
+                requestBuilder.Object,
+                LogManager.GetLogger("BookInfoProxySearchFallbackFixture"),
+                cacheManager.Object);
+
+            var result = subject.GetChangedAuthors(DateTime.UtcNow);
+
+            result.Should().BeNull();
+        }
+
         private static TestableBookInfoProxy CreateSubject(Func<string, string, bool, List<Book>> searchHandler)
         {
             var cacheManager = new Mock<ICacheManager>();

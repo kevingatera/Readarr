@@ -459,6 +459,71 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
+        public void should_use_tracked_download_author_context_for_single_file_manual_import()
+        {
+            NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides capturedOverride = null;
+            ImportDecisionMakerInfo capturedInfo = null;
+            var downloadItem = new DownloadClientItem
+            {
+                DownloadId = "tracked-single-file-id",
+                OutputPath = new OsPath(_filePath)
+            };
+            var trackedDownload = new TrackedDownload
+            {
+                DownloadItem = downloadItem,
+                ImportItem = downloadItem,
+                RemoteBook = new RemoteBook
+                {
+                    Author = _author,
+                    Books = new List<Book> { _book }
+                }
+            };
+
+            Mocker.GetMock<ITrackedDownloadService>()
+                .Setup(x => x.Find(downloadItem.DownloadId))
+                .Returns(trackedDownload);
+
+            Mocker.GetMock<IDiskProvider>()
+                .Setup(x => x.FolderExists(_filePath))
+                .Returns(false);
+
+            Mocker.GetMock<IDiskProvider>()
+                .Setup(x => x.FileExists(_filePath))
+                .Returns(true);
+
+            Mocker.GetMock<IMakeImportDecision>()
+                .Setup(x => x.GetImportDecisions(It.IsAny<List<IFileInfo>>(),
+                                                It.IsAny<NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides>(),
+                                                It.IsAny<ImportDecisionMakerInfo>(),
+                                                It.IsAny<ImportDecisionMakerConfig>()))
+                .Callback<List<IFileInfo>, NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((_, id, info, _) =>
+                {
+                    capturedOverride = id;
+                    capturedInfo = info;
+                })
+                .Returns(new List<ImportDecision<LocalBook>>
+                {
+                    new ImportDecision<LocalBook>(new LocalBook
+                    {
+                        Path = _filePath,
+                        Author = _author,
+                        Book = _book,
+                        Edition = _edition,
+                        Quality = new QualityModel(Quality.M4B),
+                        FileTrackInfo = new ParsedTrackInfo()
+                    })
+                });
+
+            var result = Subject.GetMediaFiles(_filePath, downloadItem.DownloadId, null, FilterFilesType.None, false);
+
+            result.Should().HaveCount(1);
+            capturedOverride.Should().NotBeNull();
+            capturedOverride.Author.Should().Be(_author);
+            capturedInfo.Should().NotBeNull();
+            capturedInfo.DownloadClientItem.Should().Be(downloadItem);
+        }
+
+        [Test]
         public void should_prefer_longer_exact_title_over_series_base_title_for_folder_override()
         {
             var folder = Path.GetDirectoryName(_filePath);
