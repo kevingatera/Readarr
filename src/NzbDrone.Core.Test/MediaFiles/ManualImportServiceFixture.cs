@@ -474,10 +474,18 @@ namespace NzbDrone.Core.Test.MediaFiles
                 ImportItem = downloadItem,
                 RemoteBook = new RemoteBook
                 {
-                    Author = _author,
-                    Books = new List<Book> { _book }
+                    Books = new List<Book>
+                    {
+                        Builder<Book>.CreateNew()
+                            .With(x => x.AuthorMetadataId = _author.AuthorMetadataId)
+                            .Build()
+                    }
                 }
             };
+
+            Mocker.GetMock<IAuthorService>()
+                .Setup(x => x.GetAuthorByMetadataId(_author.AuthorMetadataId))
+                .Returns(_author);
 
             Mocker.GetMock<ITrackedDownloadService>()
                 .Setup(x => x.Find(downloadItem.DownloadId))

@@ -109,7 +109,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 }
                 else
                 {
-                    author ??= trackedDownload.RemoteBook?.Author;
+                    author ??= GetTrackedDownloadAuthor(trackedDownload);
 
                     if (trackedDownload.ImportItem == null)
                     {
@@ -128,7 +128,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 }
 
                 var files = new List<IFileInfo> { _diskProvider.GetFileInfo(path) };
-                author ??= trackedDownload?.RemoteBook?.Author ?? _parsingService.GetAuthor(Path.GetFileNameWithoutExtension(path));
+                author ??= GetTrackedDownloadAuthor(trackedDownload) ?? _parsingService.GetAuthor(Path.GetFileNameWithoutExtension(path));
 
                 var itemInfo = new ImportDecisionMakerInfo
                 {
@@ -155,6 +155,29 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
             }
 
             return ProcessFolder(path, downloadId, author, filter, replaceExistingFiles);
+        }
+
+        private Author GetTrackedDownloadAuthor(TrackedDownload trackedDownload)
+        {
+            var remoteBook = trackedDownload?.RemoteBook;
+            if (remoteBook == null)
+            {
+                return null;
+            }
+
+            var author = remoteBook.Author ?? remoteBook.Books?.FirstOrDefault(x => x?.Author != null)?.Author;
+            if (author != null)
+            {
+                return author;
+            }
+
+            var authorMetadataId = remoteBook.Books?.FirstOrDefault(x => x?.AuthorMetadataId > 0)?.AuthorMetadataId ?? 0;
+            if (authorMetadataId > 0)
+            {
+                return _authorService.GetAuthorByMetadataId(authorMetadataId);
+            }
+
+            return null;
         }
 
         private List<ManualImportItem> ProcessFolder(string folder, string downloadId, Author author, FilterFilesType filter, bool replaceExistingFiles)
