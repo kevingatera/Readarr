@@ -62,6 +62,69 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
         }
 
         [Test]
+        // Regression: a work carrying no author/contributor information at all
+        // (sparse upstream data, e.g. under load) used to be silently dropped by
+        // MapAuthor, which made the refresh see fewer books than are held locally
+        // and caused RefreshEntityServiceBase to delete the "missing" local books.
+        // Such a work is now attributed to the author being mapped.
+        public void should_keep_work_when_work_has_no_author_information()
+        {
+            var resource = new AuthorResource
+            {
+                ForeignId = 1,
+                Name = "Eric Flint",
+                Works = new List<WorkResource>
+                {
+                    new WorkResource
+                    {
+                        ForeignId = 10,
+                        Title = "1812",
+                        Books = null,
+                        Authors = null
+                    }
+                },
+                Series = new List<SeriesResource>()
+            };
+
+            var author = InvokePrivateStatic<Author>("MapAuthor", resource);
+
+            author.Should().NotBeNull();
+            author.Books.Value.Should().HaveCount(1);
+            author.Books.Value[0].ForeignBookId.Should().Be("10");
+        }
+
+        [Test]
+        // Sanity: a work that explicitly lists a DIFFERENT author is still
+        // dropped by MapAuthor (only the no-author-data case is preserved).
+        public void should_still_drop_work_that_belongs_to_a_different_author()
+        {
+            var resource = new AuthorResource
+            {
+                ForeignId = 1,
+                Name = "Eric Flint",
+                Works = new List<WorkResource>
+                {
+                    new WorkResource
+                    {
+                        ForeignId = 10,
+                        Title = "Someone Else's Work",
+                        Books = null,
+                        Authors = new List<AuthorResource>
+                        {
+                            new AuthorResource { ForeignId = 2, Name = "Someone Else" }
+                        }
+                    }
+                },
+                Series = new List<SeriesResource>()
+            };
+
+            var author = InvokePrivateStatic<Author>("MapAuthor", resource);
+
+            author.Should().NotBeNull();
+            author.Books.Value.Should().BeEmpty();
+        }
+
+        [Test]
         public void should_prefer_author_role_contributors_over_other_contributors()
         {
             var work = new WorkResource
