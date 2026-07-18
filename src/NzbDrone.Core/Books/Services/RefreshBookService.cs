@@ -153,15 +153,29 @@ namespace NzbDrone.Core.Books
 
             var book = EquivalentBookMergeHelper.FindMatchingRemoteBook(local, remote);
 
-            if (book == null && ShouldDelete(local))
-            {
-                return result;
-            }
-
+            // When a book is absent from the filtered remote list, distinguish two
+            // cases before deciding to delete:
+            //   - The book IS in the unfiltered author payload (the `data` argument)
+            //     but was removed by the metadata profile / import-list exclusions.
+            //     In this case honor the filter: fall through to the normal delete
+            //     decision (the caller's ShouldDelete path).
+            //   - The book is NOT in the unfiltered payload either, meaning the
+            //     author payload itself was degraded/truncated (rate limiting,
+            //     partial scrape, sparse contributor data). Attempt a direct
+            //     per-book lookup before deleting, so a transient upstream gap does
+            //     not delete a book that genuinely exists. A genuine 404 throws
+            //     BookNotFoundException inside GetSkyhookData (-> null -> the
+            //     caller's ShouldDelete path handles it), while a transient
+            //     metadata-source failure throws BookInfoException which propagates
+            //     and aborts the refresh rather than deleting books.
             if (book == null)
             {
-                data = GetSkyhookData(local);
-                book = EquivalentBookMergeHelper.FindMatchingRemoteBook(local, data?.Books?.Value);
+                var inUnfilteredPayload = data?.Books?.Value?.Any(x => x.ForeignBookId == local.ForeignBookId) == true;
+                if (!inUnfilteredPayload)
+                {
+                    data = GetSkyhookData(local);
+                    book = EquivalentBookMergeHelper.FindMatchingRemoteBook(local, data?.Books?.Value);
+                }
             }
 
             result.Entity = book;
