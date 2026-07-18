@@ -912,8 +912,28 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         {
             var metadata = MapAuthorMetadata(resource);
 
+            // Keep a work if it lists this author among its authors. If the work
+            // carries no author information at all (sparse/incomplete upstream
+            // data, e.g. under load), attribute it to the author being mapped
+            // rather than silently dropping it. Dropping works here causes the
+            // refresh to see fewer books than are actually held locally, which
+            // makes RefreshEntityServiceBase delete the "missing" local books.
             var books = resource.Works
-                .Where(x => x.ForeignId > 0 && GetAuthorIds(x).Contains(resource.ForeignId))
+                .Where(x =>
+                {
+                    if (x.ForeignId <= 0)
+                    {
+                        return false;
+                    }
+
+                    var authorIds = GetAuthorIds(x);
+                    if (authorIds.Count == 0)
+                    {
+                        return true;
+                    }
+
+                    return authorIds.Contains(resource.ForeignId);
+                })
                 .Select(MapBook)
                 .ToList();
 

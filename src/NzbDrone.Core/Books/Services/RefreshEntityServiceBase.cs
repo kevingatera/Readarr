@@ -90,6 +90,18 @@ namespace NzbDrone.Core.Books
         protected abstract List<TChild> GetLocalChildren(TEntity entity, List<TChild> remoteChildren);
         protected abstract Tuple<TChild, List<TChild>> GetMatchingExistingChildren(List<TChild> existingChildren, TChild remote);
 
+        // Returns true when the remote children set looks implausibly incomplete
+        // relative to what is held locally (e.g. a degraded metadata fetch where
+        // the upstream returned a valid but truncated response). When true, the
+        // refresh preserves local children it would otherwise delete so that a
+        // transient metadata-source problem does not cause irreversible data loss.
+        // Default is false; concrete refresh services override this to implement
+        // a domain-specific guard.
+        protected virtual bool IsRemoteChildrenDegraded(TEntity entity, List<TChild> localChildren, List<TChild> remoteChildren)
+        {
+            return false;
+        }
+
         protected abstract void PrepareNewChild(TChild child, TEntity entity);
         protected abstract void PrepareExistingChild(TChild local, TChild remote, TEntity entity);
 
@@ -267,6 +279,28 @@ namespace NzbDrone.Core.Books
                         sortedChildren.Deleted.Remove(child);
                     }
                 }
+            }
+
+            // Degraded-fetch guard: if the remote children set is implausibly
+            // incomplete relative to the local set, the metadata source is likely
+            // returning a truncated response (rate limiting, partial scrape,
+            // sparse contributor data, etc.). Preserve the local children we were
+            // about to delete rather than treating a transient upstream problem as
+            // "removed from metadata." They are moved to UpToDate so their own
+            // children still get a normal refresh. A clean refresh on a later run
+            // will reconcile legitimately-removed children.
+            if (sortedChildren.Deleted.Count > 0 && IsRemoteChildrenDegraded(entity, localChildren, remoteChildren))
+            {
+                _logger.Warn("{0} {1} metadata fetch looks degraded (local={2}, remote={3}); preserving {4} {5}(s) that would have been deleted.",
+                             typeof(TEntity).Name,
+                             entity,
+                             localChildren.Count,
+                             remoteChildren.Count,
+                             sortedChildren.Deleted.Count,
+                             typeof(TChild).Name.ToLower());
+
+                sortedChildren.UpToDate.AddRange(sortedChildren.Deleted);
+                sortedChildren.Deleted.Clear();
             }
 
             if (typeof(TChild) != typeof(object))
