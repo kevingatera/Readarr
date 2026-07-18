@@ -124,7 +124,7 @@ namespace NzbDrone.Core.Test.MusicTests
             // Pass an empty remote list (book missing from payload). GetRemoteData
             // should still resolve the book via the per-book fetch.
             var method = typeof(RefreshBookService).GetMethod("GetRemoteData", BindingFlags.NonPublic | BindingFlags.Instance);
-            var result = (RefreshEntityServiceBase<Author, Book>.RemoteData)method.Invoke(Subject, new object[] { localBook, new List<Book>(), null });
+            var result = (RefreshEntityServiceBase<Book, Edition>.RemoteData)method.Invoke(Subject, new object[] { localBook, new List<Book>(), null });
 
             result.Entity.Should().NotBeNull();
             result.Entity.ForeignBookId.Should().Be(localBook.ForeignBookId);
@@ -184,7 +184,7 @@ namespace NzbDrone.Core.Test.MusicTests
 
             // Pass an empty filtered remote list but a non-null unfiltered author
             // payload containing the book. GetRemoteData should NOT call GetBookInfo.
-            var result = (RefreshEntityServiceBase<Author, Book>.RemoteData)method.Invoke(Subject, new object[] { localBook, new List<Book>(), unfilteredAuthor });
+            var result = (RefreshEntityServiceBase<Book, Edition>.RemoteData)method.Invoke(Subject, new object[] { localBook, new List<Book>(), unfilteredAuthor });
 
             result.Entity.Should().BeNull();
             Mocker.GetMock<IProvideBookInfo>()
