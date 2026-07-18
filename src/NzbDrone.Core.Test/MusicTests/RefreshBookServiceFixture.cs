@@ -5,6 +5,7 @@ using FluentAssertions;
 using Moq;
 using NUnit.Framework;
 using NzbDrone.Core.Books;
+using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MetadataSource;
 using NzbDrone.Core.MetadataSource.BookInfo;
 using NzbDrone.Core.Test.Framework;
@@ -120,6 +121,17 @@ namespace NzbDrone.Core.Test.MusicTests
             Mocker.GetMock<IAuthorService>()
                 .Setup(x => x.GetAuthor(localAuthor.Id))
                 .Returns(localAuthor);
+
+            // GetSkyhookData reads the author's local books and file counts to
+            // collapse equivalent remote books; provide empty collections so the
+            // auto-mocks do not return null and trip LINQ.
+            Mocker.GetMock<IBookService>()
+                .Setup(x => x.GetBooksByAuthorMetadataId(localBook.AuthorMetadataId))
+                .Returns(new List<Book>());
+
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(x => x.GetFilesByAuthorMetadataId(localBook.AuthorMetadataId))
+                .Returns(new List<BookFile>());
 
             // Pass an empty remote list (book missing from payload). GetRemoteData
             // should still resolve the book via the per-book fetch.
