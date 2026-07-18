@@ -108,6 +108,7 @@ namespace NzbDrone.Core.Test.MusicTests
 
             // 49 of 100 is below 50% so it IS flagged
             _subject.PublicIsRemoteChildrenDegraded(_author, local, Books(49)).Should().BeTrue();
+
             // 50 of 100 is exactly 50% so it is NOT flagged
             _subject.PublicIsRemoteChildrenDegraded(_author, local, Books(50)).Should().BeFalse();
         }
