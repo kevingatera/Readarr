@@ -11,6 +11,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Specifications
     {
         private const double _bookThreshold = 0.20;
         private const double _seriesPartRelaxedThreshold = 0.22;
+        private const double _metadataPoorAnyEditionThreshold = 0.40;
         private readonly Logger _logger;
 
         public CloseBookMatchSpecification(Logger logger)
@@ -36,6 +37,12 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Specifications
                         return Decision.Accept();
                     }
 
+                    if (ShouldAcceptMetadataPoorAnyEdition(item, dist))
+                    {
+                        _logger.Debug($"Accepting metadata-poor any-edition match: {dist} vs {_metadataPoorAnyEditionThreshold} {reasons}");
+                        return Decision.Accept();
+                    }
+
                     _logger.Debug($"Book match is not close enough: {dist} vs {_bookThreshold} {reasons}. Skipping {item}");
                     return Decision.Reject($"Book match is not close enough: {1 - dist:P1} vs {1 - _bookThreshold:P0} {reasons}");
                 }
@@ -56,6 +63,36 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Specifications
 
             _logger.Debug($"Accepting release {item}: dist {dist} vs {_bookThreshold} {reasons}");
             return Decision.Accept();
+        }
+
+        private static bool ShouldAcceptMetadataPoorAnyEdition(LocalEdition item, double dist)
+        {
+            if (item?.Edition?.Book?.Value?.AnyEditionOk != true || dist > _metadataPoorAnyEditionThreshold)
+            {
+                return false;
+            }
+
+            var penalties = item.Distance.Penalties;
+
+            // The title and author must already be close. Only edition-level metadata
+            // may be responsible for the bounded miss.
+            if (HasPositivePenalty(penalties, "author") ||
+                HasPositivePenalty(penalties, "book") ||
+                HasPositivePenalty(penalties, "series_part") ||
+                HasPositivePenalty(penalties, "language") ||
+                HasPositivePenalty(penalties, "wrong_format") ||
+                HasPositivePenalty(penalties, "book_id") ||
+                HasPositivePenalty(penalties, "media_count") ||
+                HasPositivePenalty(penalties, "missing_tracks") ||
+                HasPositivePenalty(penalties, "unmatched_tracks") ||
+                HasPositivePenalty(penalties, "tracks"))
+            {
+                return false;
+            }
+
+            return penalties.Keys.Any(key => key is "isbn" or "isbn_missing" or "edition_isbn_missing" or
+                                                    "asin" or "asin_missing" or "edition_asin_missing" or
+                                                    "publisher" or "ebook_format");
         }
 
         private bool ShouldAcceptSeriesPartEdgeCase(LocalEdition item, double dist)
