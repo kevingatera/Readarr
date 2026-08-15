@@ -316,7 +316,11 @@ namespace NzbDrone.Core.MediaFiles.BookImport
 
             var watch = new System.Diagnostics.Stopwatch();
             watch.Start();
-            _mediaFileService.AddMany(filesToAdd);
+            if (filesToAdd.Any())
+            {
+                _mediaFileService.AddMany(filesToAdd);
+            }
+
             _logger.Debug("Inserted new trackfiles in {0}ms", watch.ElapsedMilliseconds);
 
             // now that trackfiles have been inserted and ids generated, publish the import events
@@ -331,8 +335,16 @@ namespace NzbDrone.Core.MediaFiles.BookImport
             foreach (var bookImport in bookImports)
             {
                 var book = bookImport.First().ImportDecision.Item.Book;
-                var edition = book.Editions.Value.Single(x => x.Monitored);
                 var author = bookImport.First().ImportDecision.Item.Author;
+                var monitoredEditions = book.Editions?.Value?.Where(x => x.Monitored).ToList() ?? new List<Edition>();
+
+                if (monitoredEditions.Count != 1)
+                {
+                    _logger.Warn("Unable to publish book imported event for {0}: expected one monitored edition, found {1}", book, monitoredEditions.Count);
+                    continue;
+                }
+
+                var edition = monitoredEditions[0];
 
                 if (bookImport.Where(e => e.Errors.Count == 0).ToList().Count > 0 && author != null && book != null)
                 {
