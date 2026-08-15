@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using NLog;
 using NzbDrone.Common.Extensions;
+using NzbDrone.Core.Datastore;
 
 namespace NzbDrone.Core.Books
 {
@@ -153,7 +154,7 @@ namespace NzbDrone.Core.Books
             foreach (var s in remoteData.Series.Value)
             {
                 s.LinkItems.Value.ForEach(x => x.Series = s);
-                links.AddRange(s.LinkItems.Value.Where(x => bookDict.ContainsKey(x.Book.Value.ForeignBookId)));
+                links.AddRange(BindLinksToLocalBooks(s.LinkItems.Value, bookDict));
             }
 
             var grouped = links.GroupBy(x => x.Series.Value);
@@ -178,6 +179,29 @@ namespace NzbDrone.Core.Books
             }
 
             return updated;
+        }
+
+        internal static List<SeriesBookLink> BindLinksToLocalBooks(IEnumerable<SeriesBookLink> remoteLinks, IReadOnlyDictionary<string, Book> localBooks)
+        {
+            var links = new List<SeriesBookLink>();
+
+            foreach (var link in remoteLinks)
+            {
+                var remoteBook = link.Book?.Value;
+
+                if (remoteBook == null || !localBooks.TryGetValue(remoteBook.ForeignBookId, out var localBook))
+                {
+                    continue;
+                }
+
+                // Metadata links refer to remote book identities. Database writes
+                // must use the existing local Books row and its primary key.
+                link.Book = new LazyLoaded<Book>(localBook);
+                link.BookId = localBook.Id;
+                links.Add(link);
+            }
+
+            return links;
         }
     }
 }
