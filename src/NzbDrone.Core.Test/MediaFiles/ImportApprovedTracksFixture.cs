@@ -110,6 +110,22 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
+        public void should_not_fail_import_when_no_edition_is_monitored_after_import()
+        {
+            Mocker.GetMock<IEditionService>()
+                .Setup(s => s.SetMonitored(It.IsAny<Edition>()))
+                .Returns(new List<Edition>());
+
+            Subject.Invoking(s => s.Import(_approvedDecisions, false)).Should().NotThrow();
+
+            Mocker.GetMock<IEventAggregator>()
+                .Verify(v => v.PublishEvent(It.IsAny<BookImportedEvent>()), Times.Never());
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.AddMany(It.Is<List<BookFile>>(files => files.Count == 1)), Times.Once());
+        }
+
+        [Test]
         public void should_reuse_existing_persisted_edition_when_import_decision_has_transient_edition()
         {
             var persistedEdition = Builder<Edition>.CreateNew()

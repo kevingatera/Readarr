@@ -15,6 +15,11 @@ on:
       - "src/NzbDrone.Core/Localization/Core/**"
       - "src/Readarr.Api.*/openapi.json"
   workflow_dispatch:
+    inputs:
+      test_filter:
+        description: "Optional FullyQualifiedName substring for a focused test run"
+        required: false
+        default: ""
 
 env:
   DOTNET_VERSION: "6.0.x"
@@ -73,7 +78,7 @@ jobs:
 
       - name: Run Unit Tests (linux-x64)
         run: |
-          ./test.sh Linux Unit Test
+          ./test.sh Linux Unit Test "${{ inputs.test_filter }}"
         env:
           TEST_DIR: ${{ github.workspace }}/_tests/net6.0/linux-x64
           OUTPUTFOLDER: _output
