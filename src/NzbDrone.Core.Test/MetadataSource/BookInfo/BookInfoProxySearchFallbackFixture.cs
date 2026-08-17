@@ -91,9 +91,9 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
             var authorJson = "{\"ForeignId\":1,\"Name\":\"Author\",\"Works\":[{\"ForeignId\":10,\"Title\":\"Known Work\",\"Authors\":[{\"ForeignId\":1,\"Name\":\"Author\"}]}],\"Series\":[{\"ForeignId\":50,\"Title\":\"Series\",\"LinkItems\":[{\"ForeignWorkId\":20,\"PositionInSeries\":\"2\",\"SeriesPosition\":2,\"Primary\":true}]}]}";
 
             cachedHttpClient
-                .Setup(x => x.Get<AuthorResource>(It.IsAny<HttpRequest>(), It.IsAny<bool>(), It.IsAny<TimeSpan>()))
+                .Setup(x => x.Get<NzbDrone.Core.MetadataSource.BookInfo.AuthorResource>(It.IsAny<HttpRequest>(), It.IsAny<bool>(), It.IsAny<TimeSpan>()))
                 .Returns((HttpRequest request, bool useCache, TimeSpan ttl) =>
-                    new HttpResponse<AuthorResource>(new HttpResponse(
+                    new HttpResponse<NzbDrone.Core.MetadataSource.BookInfo.AuthorResource>(new HttpResponse(
                         request,
                         new HttpHeader { ContentType = "application/json" },
                         authorJson)));
