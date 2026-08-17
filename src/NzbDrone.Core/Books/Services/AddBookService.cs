@@ -164,9 +164,24 @@ namespace NzbDrone.Core.Books
             newBook.UseMetadataFrom(tuple.Item2);
             newBook.Added = DateTime.UtcNow;
 
-            newBook.Editions = tuple.Item2.Editions.Value;
+            newBook.Editions = tuple.Item2.Editions?.Value ?? new List<Edition>();
             newBook.Editions.Value.ForEach(x => x.Monitored = false);
-            newBook.Editions.Value.Single(x => x.ForeignEditionId == editionId).Monitored = true;
+
+            var matchingEditions = newBook.Editions.Value
+                .Where(x => x.ForeignEditionId == editionId)
+                .ToList();
+
+            if (matchingEditions.Count != 1)
+            {
+                _logger.Warn("Unable to add book {0}: requested edition {1} was not uniquely present in refreshed metadata", newBook.ForeignBookId, editionId);
+
+                throw new ValidationException(new List<ValidationFailure>
+                                              {
+                                                  new ValidationFailure("ForeignEditionId", "The requested edition was not present exactly once in the latest metadata. Refresh the lookup and select the edition again.", editionId)
+                                              });
+            }
+
+            matchingEditions[0].Monitored = true;
 
             var metadata = tuple.Item3.FirstOrDefault(x => x.ForeignAuthorId == tuple.Item1);
             newBook.AuthorMetadata = metadata;
