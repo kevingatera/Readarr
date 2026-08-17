@@ -302,7 +302,7 @@ namespace NzbDrone.Core.ImportLists
                     Tags = importList.Tags,
                     AddOptions = new AddAuthorOptions
                     {
-                        SearchForMissingBooks = importList.ShouldSearch,
+                        SearchForMissingBooks = importList.ShouldSearch && importList.ShouldMonitor != ImportListMonitorType.SpecificBook,
                         Monitored = monitored,
                         Monitor = monitored ? MonitorTypes.All : MonitorTypes.None
                     }
@@ -322,9 +322,10 @@ namespace NzbDrone.Core.ImportLists
                     Author = toAddAuthor,
                     AddOptions = new AddBookOptions
                     {
-                        // Only search for new book for existing authors
-                        // New author searches are triggered by SearchForMissingBooks
-                        SearchForNewBook = importList.ShouldSearch && toAddAuthor.Id > 0
+                        // Specific-book imports search the listed books individually.
+                        // Whole-author imports search all missing books after the author refresh.
+                        SearchForNewBook = importList.ShouldSearch &&
+                                           (toAddAuthor.Id > 0 || importList.ShouldMonitor == ImportListMonitorType.SpecificBook)
                     }
                 };
 
@@ -422,7 +423,7 @@ namespace NzbDrone.Core.ImportLists
                 Tags = importList.Tags,
                 AddOptions = new AddAuthorOptions
                 {
-                    SearchForMissingBooks = importList.ShouldSearch,
+                    SearchForMissingBooks = importList.ShouldSearch && importList.ShouldMonitor != ImportListMonitorType.SpecificBook,
                     Monitored = monitored,
                     Monitor = monitored ? MonitorTypes.All : MonitorTypes.None
                 }

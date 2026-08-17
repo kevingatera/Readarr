@@ -151,6 +151,17 @@ namespace NzbDrone.Core.Test.ImportListTests
                 .Returns(new ImportListDefinition { ShouldMonitor = monitor });
         }
 
+        private void WithSearchEnabled()
+        {
+            Mocker.GetMock<IImportListFactory>()
+                .Setup(v => v.Get(It.IsAny<int>()))
+                .Returns(new ImportListDefinition
+                {
+                    ShouldMonitor = ImportListMonitorType.SpecificBook,
+                    ShouldSearch = true
+                });
+        }
+
         [Test]
         public void should_search_if_author_title_and_no_author_id()
         {
@@ -327,6 +338,23 @@ namespace NzbDrone.Core.Test.ImportListTests
                 .Verify(v => v.AddAuthors(It.Is<List<Author>>(t => t.Count == 1 &&
                                                                    t.First().AddOptions.BooksToMonitor.Count == expectedBooksMonitored &&
                                                                    t.First().Monitored == expectedAuthorMonitored), false));
+        }
+
+        [Test]
+        public void should_search_only_listed_books_for_specific_book_imports()
+        {
+            WithBookId();
+            WithAuthorId();
+            WithSearchEnabled();
+
+            Subject.Execute(new ImportListSyncCommand());
+
+            Mocker.GetMock<IAddAuthorService>()
+                .Verify(v => v.AddAuthors(It.Is<List<Author>>(t => t.Count == 1 &&
+                                                                   !t.First().AddOptions.SearchForMissingBooks), false));
+            Mocker.GetMock<IAddBookService>()
+                .Verify(v => v.AddBooks(It.Is<List<Book>>(t => t.Count == 1 &&
+                                                             t.First().AddOptions.SearchForNewBook), false));
         }
 
         [Test]
