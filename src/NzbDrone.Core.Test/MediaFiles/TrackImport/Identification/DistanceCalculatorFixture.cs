@@ -548,7 +548,7 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
             var edition = new Edition
             {
                 Title = "Memórias póstumas de Brás Cubas",
-                Format = "paperback",
+                Format = "Audiobook",
                 Book = new LazyLoaded<Book>(book)
             };
 
