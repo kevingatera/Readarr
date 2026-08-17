@@ -130,14 +130,26 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                 //     RemoveExistingTrackFiles(author, book);
                 // }
 
-                // Make sure part numbers are populated for audiobooks
-                // If all audio files and all part numbers are zero, set them by filename order
-                if (decisionList.All(b => MediaFileExtensions.AudioExtensions.Contains(Path.GetExtension(b.Item.Path)) && b.Item.Part == 0))
+                // Make sure multi-file audiobooks have unique part numbers for naming and persistence.
+                var audioDecisions = decisionList
+                    .Where(b => MediaFileExtensions.AudioExtensions.Contains(Path.GetExtension(b.Item.Path)))
+                    .ToList();
+
+                if (audioDecisions.Count > 1)
                 {
-                    var part = 1;
-                    foreach (var d in decisionList.OrderBy(x => PadNumbers.Replace(x.Item.Path)))
+                    if (audioDecisions.Select(x => x.Item.Part).Distinct().Count() != audioDecisions.Count ||
+                        audioDecisions.Any(x => x.Item.Part <= 0))
                     {
-                        d.Item.Part = part++;
+                        var part = 1;
+                        foreach (var d in audioDecisions.OrderBy(x => PadNumbers.Replace(x.Item.Path)))
+                        {
+                            d.Item.Part = part++;
+                        }
+                    }
+
+                    foreach (var d in audioDecisions)
+                    {
+                        d.Item.PartCount = audioDecisions.Count;
                     }
                 }
 
