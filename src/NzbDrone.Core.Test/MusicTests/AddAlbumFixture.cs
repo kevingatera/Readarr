@@ -131,6 +131,23 @@ namespace NzbDrone.Core.Test.MusicTests
         }
 
         [Test]
+        public void should_return_validation_error_if_requested_edition_is_missing_from_refreshed_metadata()
+        {
+            var newBook = BookToAdd("stale-edition", "book", "author");
+
+            GivenValidBook("book", "current-edition");
+
+            var exception = Assert.Throws<ValidationException>(() => Subject.AddBook(newBook));
+
+            exception.Errors.Should().ContainSingle();
+            exception.Errors.Single().PropertyName.Should().Be("ForeignEditionId");
+            exception.Errors.Single().ErrorMessage.Should().Contain("latest metadata");
+
+            Mocker.GetMock<IBookService>()
+                .Verify(s => s.AddBook(It.IsAny<Book>(), It.IsAny<bool>()), Times.Never());
+        }
+
+        [Test]
         public void should_default_add_options_when_missing()
         {
             var newBook = BookToAdd("edition", "book", "author");
