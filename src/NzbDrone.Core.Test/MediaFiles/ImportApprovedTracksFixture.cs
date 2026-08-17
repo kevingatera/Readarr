@@ -110,6 +110,34 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
+        public void should_assign_unique_parts_to_multi_file_audiobooks()
+        {
+            var secondDecision = new ImportDecision<LocalBook>(new LocalBook
+            {
+                Author = _approvedDecisions[0].Item.Author,
+                Book = _approvedDecisions[0].Item.Book,
+                Edition = _approvedDecisions[0].Item.Edition,
+                Part = 1,
+                Path = Path.Combine(_approvedDecisions[0].Item.Author.Path, "Alien Ant Farm - 02 - Pilot.mp3"),
+                Quality = new QualityModel(Quality.MP3),
+                FileTrackInfo = new ParsedTrackInfo()
+            });
+            var importedFiles = new List<BookFile>();
+
+            Mocker.GetMock<IUpgradeMediaFiles>()
+                .Setup(s => s.UpgradeBookFile(It.IsAny<BookFile>(), It.IsAny<LocalBook>(), It.IsAny<bool>()))
+                .Callback<BookFile, LocalBook, bool>((bookFile, localBook, copyOnly) => importedFiles.Add(bookFile))
+                .Returns(new BookFileMoveResult());
+
+            var results = Subject.Import(new[] { _approvedDecisions[0], secondDecision }.ToList(), true);
+
+            results.Count(x => x.Result == ImportResultType.Imported).Should().Be(2);
+            importedFiles.Should().HaveCount(2);
+            importedFiles.Select(x => x.Part).Should().BeEquivalentTo(new[] { 1, 2 });
+            importedFiles.Select(x => x.PartCount).Should().OnlyContain(x => x == 2);
+        }
+
+        [Test]
         public void should_not_fail_import_when_no_edition_is_monitored_after_import()
         {
             Mocker.GetMock<IEditionService>()
