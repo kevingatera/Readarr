@@ -419,7 +419,8 @@ namespace NzbDrone.Core.MediaFiles
                         continue;
                     }
 
-                    historyBookInfo = Parser.Parser.ParseBookTitle(grabbedHistory.SourceTitle);
+                    var matchedHistory = grabbedHistory.FirstOrDefault(h => h.BookId == grabbedBookId);
+                    historyBookInfo = Parser.Parser.ParseBookTitle(matchedHistory?.SourceTitle);
                     return historyBook;
                 }
                 catch (Exception e)
