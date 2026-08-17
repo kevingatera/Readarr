@@ -223,7 +223,9 @@ namespace NzbDrone.Core.MediaFiles
                 Author = author
             };
 
-            var historyBookOverride = GetHistoryBookOverride(downloadClientItem, new[] { folderInfo?.BookTitle, directoryInfo.Name }.Concat(GetEmbeddedTitleHints(audioFiles)));
+            var historyBookOverride = GetHistoryBookOverride(downloadClientItem,
+                new[] { folderInfo?.BookTitle, directoryInfo.Name }.Concat(GetEmbeddedTitleHints(audioFiles)),
+                out var historyBookInfo);
 
             if (historyBookOverride != null)
             {
@@ -234,7 +236,8 @@ namespace NzbDrone.Core.MediaFiles
             var idInfo = new ImportDecisionMakerInfo
             {
                 DownloadClientItem = downloadClientItem,
-                ParsedBookInfo = folderInfo
+                ParsedBookInfo = folderInfo,
+                HistoryBookInfo = historyBookInfo
             };
             var idConfig = new ImportDecisionMakerConfig
             {
@@ -317,7 +320,9 @@ namespace NzbDrone.Core.MediaFiles
                 Author = author
             };
 
-            var historyBookOverride = GetHistoryBookOverride(downloadClientItem, new[] { Path.GetFileNameWithoutExtension(fileInfo.Name) }.Concat(GetEmbeddedTitleHints(new[] { fileInfo })));
+            var historyBookOverride = GetHistoryBookOverride(downloadClientItem,
+                new[] { Path.GetFileNameWithoutExtension(fileInfo.Name) }.Concat(GetEmbeddedTitleHints(new[] { fileInfo })),
+                out var historyBookInfo);
 
             if (historyBookOverride != null)
             {
@@ -327,7 +332,8 @@ namespace NzbDrone.Core.MediaFiles
 
             var idInfo = new ImportDecisionMakerInfo
             {
-                DownloadClientItem = downloadClientItem
+                DownloadClientItem = downloadClientItem,
+                HistoryBookInfo = historyBookInfo
             };
             var idConfig = new ImportDecisionMakerConfig
             {
@@ -379,8 +385,10 @@ namespace NzbDrone.Core.MediaFiles
             return folder;
         }
 
-        private Book GetHistoryBookOverride(DownloadClientItem downloadClientItem, IEnumerable<string> titleHints = null)
+        private Book GetHistoryBookOverride(DownloadClientItem downloadClientItem, IEnumerable<string> titleHints, out ParsedBookInfo historyBookInfo)
         {
+            historyBookInfo = null;
+
             if (downloadClientItem == null || downloadClientItem.DownloadId.IsNullOrWhiteSpace())
             {
                 return null;
@@ -411,6 +419,7 @@ namespace NzbDrone.Core.MediaFiles
                         continue;
                     }
 
+                    historyBookInfo = Parser.Parser.ParseBookTitle(grabbedHistory.SourceTitle);
                     return historyBook;
                 }
                 catch (Exception e)

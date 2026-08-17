@@ -17,6 +17,7 @@ namespace NzbDrone.Core.Parser.Model
         public ParsedTrackInfo FileTrackInfo { get; set; }
         public ParsedBookInfo FolderTrackInfo { get; set; }
         public ParsedBookInfo DownloadClientBookInfo { get; set; }
+        public ParsedBookInfo HistoryBookInfo { get; set; }
         public List<string> AcoustIdResults { get; set; }
         public Author Author { get; set; }
         public Book Book { get; set; }

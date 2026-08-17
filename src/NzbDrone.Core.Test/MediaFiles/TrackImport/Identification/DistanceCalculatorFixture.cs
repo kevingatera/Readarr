@@ -535,6 +535,51 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
         }
 
         [Test]
+        public void should_use_validated_grabbed_release_title_for_chapter_files()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Machado de Assis" };
+
+            var book = new Book
+            {
+                Title = "Memórias póstumas de Brás Cubas",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata)
+            };
+
+            var edition = new Edition
+            {
+                Title = "Memórias póstumas de Brás Cubas",
+                Format = "paperback",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/bras cubas/cd01/cd01_001_Dedicatoria.mp3",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Authors = new List<string>(),
+                        Title = "cd01_001_Dedicatoria"
+                    },
+                    HistoryBookInfo = new ParsedBookInfo
+                    {
+                        AuthorName = "Machado de Assis",
+                        BookTitle = "Memórias póstumas de Brás Cubas"
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().NotContain("author");
+            dist.Reasons.Should().NotContain("book");
+            dist.Reasons.Should().NotContain("audio format");
+            dist.Reasons.Should().NotContain("wrong format");
+            dist.NormalizedDistance().Should().BeLessThan(0.20);
+        }
+
+        [Test]
         public void should_not_soften_author_penalty_when_audio_tags_name_conflicting_author()
         {
             var authorMetadata = new AuthorMetadata { Name = "Lisa Kleypas" };

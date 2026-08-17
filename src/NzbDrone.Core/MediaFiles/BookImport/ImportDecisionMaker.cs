@@ -32,6 +32,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport
     {
         public DownloadClientItem DownloadClientItem { get; set; }
         public ParsedBookInfo ParsedBookInfo { get; set; }
+        public ParsedBookInfo HistoryBookInfo { get; set; }
     }
 
     public class ImportDecisionMakerConfig
@@ -113,6 +114,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                 {
                     DownloadClientBookInfo = downloadClientItemInfo,
                     FolderTrackInfo = folderInfo,
+                    HistoryBookInfo = itemInfo.HistoryBookInfo,
                     Path = file.FullName,
                     Part = fileTrackInfo.TrackNumbers.Any() ? fileTrackInfo.TrackNumbers.First() : 1,
                     Size = file.Length,
