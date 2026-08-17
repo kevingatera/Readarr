@@ -60,6 +60,63 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
         }
 
         [Test]
+        public void should_not_backfill_series_linked_works_during_book_search()
+        {
+            var httpClient = new Mock<IHttpClient>();
+            var cachedHttpClient = new Mock<ICachedHttpResponseService>();
+            var searchProxy = new Mock<IGoodreadsSearchProxy>();
+            var requestBuilder = new Mock<IMetadataRequestBuilder>();
+            var cacheManager = new Mock<ICacheManager>();
+
+            searchProxy
+                .Setup(x => x.Search("query"))
+                .Returns(new List<SearchJsonResource>
+                {
+                    new SearchJsonResource
+                    {
+                        WorkId = 10,
+                        BookId = 100,
+                        Author = new AuthorJsonResource { Id = 1, Name = "Author" }
+                    }
+                });
+
+            requestBuilder
+                .Setup(x => x.GetRequestBuilder())
+                .Returns(new HttpRequestBuilder("http://metadata.invalid/{route}").CreateFactory());
+
+            cacheManager
+                .Setup(x => x.GetCache<HashSet<string>>(It.IsAny<Type>()))
+                .Returns(new Mock<ICached<HashSet<string>>>().Object);
+
+            var authorJson = "{\"ForeignId\":1,\"Name\":\"Author\",\"Works\":[{\"ForeignId\":10,\"Title\":\"Known Work\",\"Authors\":[{\"ForeignId\":1,\"Name\":\"Author\"}]}],\"Series\":[{\"ForeignId\":50,\"Title\":\"Series\",\"LinkItems\":[{\"ForeignWorkId\":20,\"PositionInSeries\":\"2\",\"SeriesPosition\":2,\"Primary\":true}]}]}";
+
+            cachedHttpClient
+                .Setup(x => x.Get<AuthorResource>(It.IsAny<HttpRequest>(), It.IsAny<bool>(), It.IsAny<TimeSpan>()))
+                .Returns((HttpRequest request, bool useCache, TimeSpan ttl) =>
+                    new HttpResponse<AuthorResource>(new HttpResponse(
+                        request,
+                        new HttpHeader { ContentType = "application/json" },
+                        authorJson)));
+
+            var subject = new BookInfoProxy(
+                httpClient.Object,
+                cachedHttpClient.Object,
+                searchProxy.Object,
+                Mock.Of<IAuthorService>(),
+                Mock.Of<IBookService>(),
+                Mock.Of<IEditionService>(),
+                requestBuilder.Object,
+                LogManager.GetLogger("BookInfoProxySearchFallbackFixture"),
+                cacheManager.Object);
+
+            var result = subject.SearchForNewBook("query", null, true);
+
+            result.Should().ContainSingle();
+            result[0].ForeignBookId.Should().Be("10");
+            httpClient.Verify(x => x.Get(It.IsAny<HttpRequest>()), Times.Never());
+        }
+
+        [Test]
         public void should_treat_changed_author_response_with_null_ids_as_unavailable()
         {
             var httpClient = new Mock<IHttpClient>();

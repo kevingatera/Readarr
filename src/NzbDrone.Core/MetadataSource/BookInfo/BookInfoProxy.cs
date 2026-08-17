@@ -99,7 +99,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                     return PollAuthor(foreignAuthorId);
                 }
 
-                return PollAuthorUncached(foreignAuthorId);
+                return PollAuthorUncached(foreignAuthorId, true);
             }
             catch (BookInfoException e)
             {
@@ -320,7 +320,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             try
             {
                 var authorId = id.ToString();
-                var result = GetAuthorInfo(authorId);
+                var result = PollAuthorForSearch(authorId);
                 var books = result.Books.Value;
                 var authors = new Dictionary<string, AuthorMetadata> { { authorId, result.Metadata.Value } };
 
@@ -595,7 +595,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         private Author PollAuthor(string foreignAuthorId)
         {
             return _authorCache.GetOrAdd(foreignAuthorId,
-                () => PollAuthorUncached(foreignAuthorId),
+                () => PollAuthorUncached(foreignAuthorId, true),
                 new LazyCacheEntryOptions
                 {
                     AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10),
@@ -606,7 +606,14 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 }.RegisterPostEvictionCallback((key, value, reason, state) => _logger.Debug($"Clearing cache for {key} due to {reason}")));
         }
 
-        private Author PollAuthorUncached(string foreignAuthorId)
+        private Author PollAuthorForSearch(string foreignAuthorId)
+        {
+            // Add-search only needs the works returned by the author resource. Backfilling
+            // every series-linked work here turns one search into a slow, unbounded fan-out.
+            return PollAuthorUncached(foreignAuthorId, false);
+        }
+
+        private Author PollAuthorUncached(string foreignAuthorId, bool backfillSeriesWorks)
         {
             AuthorResource resource = null;
 
@@ -651,7 +658,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                     resource.Works ??= new List<WorkResource>();
                     resource.Series ??= new List<SeriesResource>();
 
-                    if (int.TryParse(foreignAuthorId, out var parsedAuthorId))
+                    if (backfillSeriesWorks && int.TryParse(foreignAuthorId, out var parsedAuthorId))
                     {
                         BackfillSeriesLinkedWorks(resource, parsedAuthorId);
                     }
