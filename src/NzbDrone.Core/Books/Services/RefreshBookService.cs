@@ -345,7 +345,17 @@ namespace NzbDrone.Core.Books
 
             if (monitored.Count == 1)
             {
-                return;
+                var selectedHasFiles = monitored[0].Id > 0 && _mediaFileService.GetFilesByEdition(monitored[0].Id).Any();
+                var anotherEditionHasFiles = children.Future.Any(x => x.Id > 0 &&
+                    x.Id != monitored[0].Id &&
+                    _mediaFileService.GetFilesByEdition(x.Id).Any());
+
+                if (selectedHasFiles || !anotherEditionHasFiles)
+                {
+                    return;
+                }
+
+                monitored = children.Future;
             }
 
             if (monitored.Count == 0)
