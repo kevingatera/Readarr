@@ -16,6 +16,31 @@ namespace NzbDrone.Core.Test.MusicTests
     public class RefreshBookServiceFixture : CoreTest<RefreshBookService>
     {
         [Test]
+        public void should_monitor_the_file_bearing_edition_when_the_selected_edition_has_no_files()
+        {
+            var selected = new Edition { Id = 1, Monitored = true, Ratings = new Ratings() };
+            var fileBearing = new Edition { Id = 2, Monitored = false, Ratings = new Ratings() };
+            var children = new RefreshEntityServiceBase<Book, Edition>.SortedChildren
+            {
+                UpToDate = new List<Edition> { selected, fileBearing }
+            };
+
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(x => x.GetFilesByEdition(selected.Id))
+                .Returns(new List<BookFile>());
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(x => x.GetFilesByEdition(fileBearing.Id))
+                .Returns(new List<BookFile> { new BookFile() });
+
+            var method = typeof(RefreshBookService).GetMethod("MonitorSingleEdition", BindingFlags.NonPublic | BindingFlags.Instance);
+            method.Invoke(Subject, new object[] { children });
+
+            selected.Monitored.Should().BeFalse();
+            fileBearing.Monitored.Should().BeTrue();
+            children.Updated.Should().BeEquivalentTo(new[] { selected, fileBearing });
+        }
+
+        [Test]
         public void should_fallback_to_local_author_when_remote_author_fetch_fails()
         {
             var localAuthorMetadata = new AuthorMetadata
