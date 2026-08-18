@@ -219,8 +219,10 @@ namespace Readarr.Api.V1.Books
 
             var model = bookResource.ToModel(book);
 
-            _bookService.UpdateBook(model);
+            // Edition selection affects author statistics. Persist it before the
+            // BookEditedEvent clears and repopulates the statistics cache.
             _editionService.UpdateMany(model.Editions.Value);
+            _bookService.UpdateBook(model);
 
             BroadcastResourceChange(ModelAction.Updated, model.Id);
 
