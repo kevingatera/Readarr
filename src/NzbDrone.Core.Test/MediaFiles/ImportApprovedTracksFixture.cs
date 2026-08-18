@@ -340,8 +340,8 @@ namespace NzbDrone.Core.Test.MediaFiles
             var results = Subject.Import(all, false);
 
             results.Should().HaveCount(all.Count);
-            results.Should().ContainSingle(d => d.Result == ImportResultType.Imported);
-            results.Should().ContainSingle(d => d.Result == ImportResultType.Imported && d.ImportDecision.Item.Size == hqDecision.Item.Size);
+            results.Should().OnlyContain(d => d.Result == ImportResultType.Imported);
+            results.First().ImportDecision.Item.Size.Should().Be(hqDecision.Item.Size);
         }
 
         [Test]
