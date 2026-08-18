@@ -499,7 +499,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                 return new List<CandidateEdition>();
             }
 
-            var matchingBooks = _bookService.GetBooksByAuthorMetadataId(author.AuthorMetadataId)
+            var matchingBooks = (_bookService.GetBooksByAuthorMetadataId(author.AuthorMetadataId) ?? new List<Book>())
                 .Where(book => MatchesSeriesPart(book, partNumbers))
                 .DistinctBy(x => x.Id)
                 .ToList();
@@ -517,7 +517,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
         {
             var partNumbers = new List<double>();
 
-            foreach (var tag in bookTags.Where(x => x.IsNotNullOrWhiteSpace()))
+            foreach (var tag in (bookTags ?? Enumerable.Empty<string>()).Where(x => x.IsNotNullOrWhiteSpace()))
             {
                 var leadingMatch = LeadingPartRegex.Match(tag);
                 if (leadingMatch.Success && TryParsePartNumber(leadingMatch.Groups["number"].Value, out var leadingPart))

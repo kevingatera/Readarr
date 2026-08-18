@@ -123,9 +123,17 @@ namespace NzbDrone.Core.Test.MediaFiles
                 .Setup(x => x.ReadTags(_fileInfo))
                 .Returns(new ParsedTrackInfo
                 {
-                    Title = "Resonant Son: Resonant Son, Book 1",
-                    BookTitle = "Resonant Son: Resonant Son, Book 1"
+                    Title = "Takeover",
+                    BookTitle = "Takeover"
                 });
+
+            Mocker.GetMock<IBookService>()
+                .Setup(x => x.GetBooksByAuthorMetadataId(_author.AuthorMetadataId))
+                .Returns(new List<Book> { _book });
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(x => x.GetEditionsByBook(_book.Id))
+                .Returns(new List<Edition> { _edition });
 
             Mocker.GetMock<IBookService>()
                 .Setup(x => x.FindByTitle(_author.AuthorMetadataId, "Resonant Son: Resonant Son, Book 1"))
