@@ -85,6 +85,10 @@ namespace NzbDrone.Core.Test.MusicTests
                 .Setup(x => x.GetAuthor(localAuthor.Id))
                 .Returns(localAuthor);
 
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(x => x.GetFilesByAuthorMetadataId(localAuthor.AuthorMetadataId))
+                .Returns(new List<BookFile>());
+
             var method = typeof(RefreshBookService).GetMethod("GetSkyhookData", BindingFlags.NonPublic | BindingFlags.Instance);
             var result = (Author)method.Invoke(Subject, new object[] { localBook });
 
@@ -92,7 +96,7 @@ namespace NzbDrone.Core.Test.MusicTests
             result.Should().BeSameAs(localAuthor);
             result.Books.Value.Should().HaveCount(1);
             result.Books.Value[0].AuthorMetadataId.Should().Be(localBook.AuthorMetadataId);
-            result.Books.Value[0].Author.Should().BeSameAs(localAuthor);
+            result.Books.Value[0].Author.Value.Should().BeSameAs(localAuthor);
             result.Books.Value[0].AuthorMetadata.Value.ForeignAuthorId.Should().Be(localAuthor.ForeignAuthorId);
         }
 

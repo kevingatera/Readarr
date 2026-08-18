@@ -61,10 +61,10 @@ namespace NzbDrone.Core.Test.NotificationTests
             Subject.OnBookDelete(new BookDeleteMessage(book, true));
 
             Mocker.GetMock<IHttpClient>()
-                .Verify(c => c.Execute(It.Is<HttpRequest>(r => r.Url.Path.Contains("review/list.xml") && r.Url.Query.Contains("page=1"))), Times.Once());
+                .Verify(c => c.Execute(It.Is<HttpRequest>(r => r.Url.Path.Contains("review/list.xml") && r.Url.Query.Contains("&page=1&"))), Times.Once());
 
             Mocker.GetMock<IHttpClient>()
-                .Verify(c => c.Execute(It.Is<HttpRequest>(r => r.Url.Path.Contains("review/list.xml") && r.Url.Query.Contains("page=2"))), Times.Once());
+                .Verify(c => c.Execute(It.Is<HttpRequest>(r => r.Url.Path.Contains("review/list.xml") && r.Url.Query.Contains("&page=2&"))), Times.Once());
 
             Mocker.GetMock<IHttpClient>()
                 .Verify(c => c.Execute(It.Is<HttpRequest>(r => r.Url.Path.Contains("shelf/add_to_shelf.xml"))), Times.Once());

@@ -394,7 +394,7 @@ namespace NzbDrone.Core.MediaFiles
                 return null;
             }
 
-            var grabbedHistory = _historyService.Find(downloadClientItem.DownloadId, EntityHistoryEventType.Grabbed);
+            var grabbedHistory = _historyService.Find(downloadClientItem.DownloadId, EntityHistoryEventType.Grabbed) ?? new List<EntityHistory>();
 
             var grabbedBookIds = grabbedHistory
                 .OrderByDescending(h => h.Date)

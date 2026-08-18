@@ -104,8 +104,8 @@ namespace NzbDrone.Core.Books
 
             if (data != null)
             {
-                var localBooks = _bookService.GetBooksByAuthorMetadataId(local.AuthorMetadataId);
-                var fileCounts = _mediaFileService.GetFilesByAuthorMetadataId(local.AuthorMetadataId)
+                var localBooks = _bookService.GetBooksByAuthorMetadataId(local.AuthorMetadataId) ?? new List<Book>();
+                var fileCounts = (_mediaFileService.GetFilesByAuthorMetadataId(local.AuthorMetadataId) ?? new List<BookFile>())
                                                  .Where(x => x.Edition?.Value?.Book?.Value != null)
                                                  .GroupBy(x => x.Edition.Value.Book.Value.Id)
                                                  .ToDictionary(x => x.Key, x => x.Count());
