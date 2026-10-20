@@ -214,11 +214,41 @@ namespace NzbDrone.Core.Test.MediaFiles
                                                                d[0].Item.Edition == _edition),
                     false,
                     null,
-                    ImportMode.Auto),
+                    ImportMode.Copy),
                     Times.Once());
 
             Mocker.GetMock<IEventAggregator>()
                 .Verify(x => x.PublishEvent(It.IsAny<DownloadCompletedEvent>()), Times.Never());
+        }
+
+        [Test]
+        public void should_keep_explicit_move_when_tracked_download_is_missing()
+        {
+            var command = new ManualImportCommand
+            {
+                ImportMode = ImportMode.Move,
+                Files = new List<ManualImportFile>
+                {
+                    new ManualImportFile
+                    {
+                        Path = _filePath,
+                        AuthorId = _author.Id,
+                        BookId = _book.Id,
+                        ForeignEditionId = _edition.ForeignEditionId,
+                        Quality = new QualityModel(Quality.M4B),
+                        DownloadId = "stale-download-id"
+                    }
+                }
+            };
+
+            Mocker.GetMock<ITrackedDownloadService>()
+                .Setup(x => x.Find("stale-download-id"))
+                .Returns((TrackedDownload)null);
+
+            Subject.Execute(command);
+
+            Mocker.GetMock<IImportApprovedBooks>()
+                .Verify(x => x.Import(It.IsAny<List<ImportDecision<LocalBook>>>(), false, null, ImportMode.Move), Times.Once());
         }
 
         [Test]

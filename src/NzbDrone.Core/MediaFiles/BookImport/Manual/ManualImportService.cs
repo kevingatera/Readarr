@@ -758,12 +758,23 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 var trackedDownload = ResolveTrackedDownload(importBookId.ToList(), downloadId);
                 var downloadClientItem = trackedDownload?.DownloadItem;
 
+                var importMode = message.ImportMode;
+
                 if (downloadClientItem == null && downloadId.IsNotNullOrWhiteSpace())
                 {
-                    _logger.Warn("Tracked download {0} was not available during manual import, importing without tracked download context", downloadId);
+                    // Auto only moves when the client says it is done with the files. Without the
+                    // client item that cannot be known, and moving a payload that is still seeding
+                    // strands the torrent (missing files, tracker hit and run). Copy, which
+                    // hardlinks when enabled, is safe either way.
+                    if (importMode == ImportMode.Auto)
+                    {
+                        importMode = ImportMode.Copy;
+                    }
+
+                    _logger.Warn("Tracked download {0} was not available during manual import, importing without tracked download context (mode {1})", downloadId, importMode);
                 }
 
-                var importResults = _importApprovedBooks.Import(bookImportDecisions, message.ReplaceExistingFiles, downloadClientItem, message.ImportMode);
+                var importResults = _importApprovedBooks.Import(bookImportDecisions, message.ReplaceExistingFiles, downloadClientItem, importMode);
 
                 imported.AddRange(importResults);
 
