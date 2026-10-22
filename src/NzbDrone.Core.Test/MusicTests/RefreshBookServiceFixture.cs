@@ -9,6 +9,7 @@ using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MetadataSource;
 using NzbDrone.Core.MetadataSource.BookInfo;
 using NzbDrone.Core.Test.Framework;
+using NzbDrone.Test.Common;
 
 namespace NzbDrone.Core.Test.MusicTests
 {
@@ -70,6 +71,8 @@ namespace NzbDrone.Core.Test.MusicTests
 
             var method = typeof(RefreshBookService).GetMethod("GetSkyhookData", BindingFlags.NonPublic | BindingFlags.Instance);
             var result = (Author)method.Invoke(Subject, new object[] { localBook });
+
+            ExceptionVerification.ExpectedWarns(1);
 
             result.Should().NotBeNull();
             result.Should().BeSameAs(localAuthor);
