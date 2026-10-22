@@ -60,6 +60,14 @@ namespace NzbDrone.Core.Test.MusicTests
                 .Setup(x => x.GetAuthor(localAuthor.Id))
                 .Returns(localAuthor);
 
+            Mocker.GetMock<IBookService>()
+                .Setup(x => x.GetBooksByAuthorMetadataId(localBook.AuthorMetadataId))
+                .Returns(new List<Book>());
+
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(x => x.GetFilesByAuthorMetadataId(localBook.AuthorMetadataId))
+                .Returns(new List<BookFile>());
+
             var method = typeof(RefreshBookService).GetMethod("GetSkyhookData", BindingFlags.NonPublic | BindingFlags.Instance);
             var result = (Author)method.Invoke(Subject, new object[] { localBook });
 
