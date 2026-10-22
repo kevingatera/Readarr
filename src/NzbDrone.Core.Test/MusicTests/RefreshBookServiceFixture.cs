@@ -75,7 +75,7 @@ namespace NzbDrone.Core.Test.MusicTests
             result.Should().BeSameAs(localAuthor);
             result.Books.Value.Should().HaveCount(1);
             result.Books.Value[0].AuthorMetadataId.Should().Be(localBook.AuthorMetadataId);
-            result.Books.Value[0].Author.Should().BeSameAs(localAuthor);
+            result.Books.Value[0].Author.Value.Should().BeSameAs(localAuthor);
             result.Books.Value[0].AuthorMetadata.Value.ForeignAuthorId.Should().Be(localAuthor.ForeignAuthorId);
         }
 
