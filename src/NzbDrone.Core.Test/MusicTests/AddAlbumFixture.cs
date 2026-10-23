@@ -145,6 +145,8 @@ namespace NzbDrone.Core.Test.MusicTests
 
             Mocker.GetMock<IBookService>()
                 .Verify(s => s.AddBook(It.IsAny<Book>(), It.IsAny<bool>()), Times.Never());
+
+            ExceptionVerification.ExpectedWarns(1);
         }
 
         [Test]
