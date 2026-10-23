@@ -251,6 +251,8 @@ namespace NzbDrone.Core.Test.MediaFiles
 
             Mocker.GetMock<IImportApprovedBooks>()
                 .Verify(x => x.Import(It.IsAny<List<ImportDecision<LocalBook>>>(), false, null, ImportMode.Move), Times.Once());
+
+            ExceptionVerification.ExpectedWarns(1);
         }
 
         [Test]
