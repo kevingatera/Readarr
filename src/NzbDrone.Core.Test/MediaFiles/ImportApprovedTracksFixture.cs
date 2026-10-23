@@ -375,6 +375,8 @@ namespace NzbDrone.Core.Test.MediaFiles
             results.Should().HaveCount(all.Count);
             results.Should().ContainSingle(d => d.Result == ImportResultType.Imported);
             results.Should().ContainSingle(d => d.Result == ImportResultType.Imported && d.ImportDecision.Item.Size == fileDecision.Item.Size);
+
+            ExceptionVerification.ExpectedWarns(1);
         }
 
         [Test]
