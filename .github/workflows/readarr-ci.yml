@@ -20,6 +20,14 @@ on:
         description: "Optional FullyQualifiedName substring for a focused test run"
         required: false
         default: ""
+  # Reusable so the homelab image workflow can gate publication on this suite.
+  workflow_call:
+    inputs:
+      test_filter:
+        description: "Optional FullyQualifiedName substring for a focused test run"
+        required: false
+        type: string
+        default: ""
 
 env:
   DOTNET_VERSION: "6.0.x"

@@ -78,9 +78,8 @@ else
   exit 3
 fi
 
-if [ "$EXIT_CODE" -ge 0 ]; then
+if [ "$EXIT_CODE" -ne 0 ]; then
   echo "Failed tests: $EXIT_CODE"
-  exit 0
-else
-  exit $EXIT_CODE
 fi
+
+exit "$EXIT_CODE"

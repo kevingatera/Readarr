@@ -6,12 +6,26 @@ on:
       - homelab
   workflow_dispatch:
 
+# Serialize publication of the mutable `homelab` tag. A newer run cancels an
+# older one so a slower, older build cannot overwrite the tag afterwards.
+concurrency:
+  group: homelab-docker-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+  # checks: write is for the reused CI suite's test reporter.
+  checks: write
   packages: write
 
 jobs:
+  # Reuse the Readarr CI suite so the image is only published for a commit
+  # whose tests passed.
+  test:
+    uses: ./.github/workflows/readarr-ci.yml
+
   build-and-push:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -30,7 +44,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Single build for the run. Mirrors the image build in docker-build.yml
+      # with homelab tags and build args. The pushed digest is reused below.
       - name: Build and Push Homelab Image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -49,22 +66,17 @@ jobs:
             org.opencontainers.image.version=homelab
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: Export Homelab Image Archive
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: false
-          platforms: linux/amd64
-          tags: ghcr.io/kevingatera/readarr:homelab
-          build-args: |
-            VERSION=0.9.0.1
-            VENDOR=kevingatera
-            BRANCH=homelab
-          outputs: type=docker,dest=/tmp/readarr-homelab.tar
-
-      - name: Compress Homelab Image Archive
-        run: gzip -f /tmp/readarr-homelab.tar
+      # Export the image that was just published, by digest, instead of
+      # rebuilding it. This keeps the archive identical to the registry image.
+      - name: Export Published Homelab Image
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker pull "ghcr.io/kevingatera/readarr@${IMAGE_DIGEST}"
+          docker tag "ghcr.io/kevingatera/readarr@${IMAGE_DIGEST}" readarr-homelab:archive
+          docker save readarr-homelab:archive -o /tmp/readarr-homelab.tar
+          gzip -f /tmp/readarr-homelab.tar
 
       - name: Upload Homelab Image Artifact
         uses: actions/upload-artifact@v4
