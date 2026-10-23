@@ -123,9 +123,17 @@ namespace NzbDrone.Core.Test.MediaFiles
                 .Setup(x => x.ReadTags(_fileInfo))
                 .Returns(new ParsedTrackInfo
                 {
-                    Title = "Resonant Son: Resonant Son, Book 1",
-                    BookTitle = "Resonant Son: Resonant Son, Book 1"
+                    Title = "Takeover",
+                    BookTitle = "Takeover"
                 });
+
+            Mocker.GetMock<IBookService>()
+                .Setup(x => x.GetBooksByAuthorMetadataId(_author.AuthorMetadataId))
+                .Returns(new List<Book> { _book });
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(x => x.GetEditionsByBook(_book.Id))
+                .Returns(new List<Edition> { _edition });
 
             Mocker.GetMock<IBookService>()
                 .Setup(x => x.FindByTitle(_author.AuthorMetadataId, "Resonant Son: Resonant Son, Book 1"))
@@ -211,6 +219,8 @@ namespace NzbDrone.Core.Test.MediaFiles
 
             Mocker.GetMock<IEventAggregator>()
                 .Verify(x => x.PublishEvent(It.IsAny<DownloadCompletedEvent>()), Times.Never());
+
+            ExceptionVerification.ExpectedWarns(1);
         }
 
         [Test]
@@ -253,6 +263,8 @@ namespace NzbDrone.Core.Test.MediaFiles
             result.Should().HaveCount(1);
             result[0].Path.Should().Be(_filePath);
             result[0].DownloadId.Should().BeNullOrEmpty();
+
+            ExceptionVerification.ExpectedWarns(1);
         }
 
         [Test]
