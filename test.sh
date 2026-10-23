@@ -2,6 +2,7 @@
 PLATFORM=$1
 TYPE=$2
 COVERAGE=$3
+TEST_FILTER=$4
 WHERE="Category!=ManualTest"
 TEST_PATTERN="*Test.dll"
 FILES=( "Readarr.Api.Test.dll" "Readarr.Automation.Test.dll" "Readarr.Common.Test.dll" "Readarr.Core.Test.dll" "Readarr.Host.Test.dll" "Readarr.Integration.Test.dll" "Readarr.Libraries.Test.dll" "Readarr.Mono.Test.dll" "Readarr.Update.Test.dll" "Readarr.Windows.Test.dll" )
@@ -56,6 +57,10 @@ else
   exit 2
 fi
 
+if [ -n "$TEST_FILTER" ]; then
+  WHERE="$WHERE&FullyQualifiedName~$TEST_FILTER"
+fi
+
 for i in "${FILES[@]}";
   do ASSEMBLIES="$ASSEMBLIES $TEST_DIR/$i"
 done
@@ -73,9 +78,8 @@ else
   exit 3
 fi
 
-if [ "$EXIT_CODE" -ge 0 ]; then
+if [ "$EXIT_CODE" -ne 0 ]; then
   echo "Failed tests: $EXIT_CODE"
-  exit 0
-else
-  exit $EXIT_CODE
 fi
+
+exit "$EXIT_CODE"
