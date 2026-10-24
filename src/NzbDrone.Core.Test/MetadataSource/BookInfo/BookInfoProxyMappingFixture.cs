@@ -364,7 +364,7 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
                     "{\"ForeignId\":1,\"Name\":\"Eric Flint\",\"Works\":[{\"ForeignId\":11,\"Title\":\"Other\"}],\"Series\":[]}"));
 
             var method = typeof(BookInfoProxy).GetMethod("PollBook", BindingFlags.NonPublic | BindingFlags.Instance);
-            var thrown = Assert.Throws<TargetInvocationException>(() => method.Invoke(Subject, new object[] { "10" }));
+            var thrown = Assert.Throws<TargetInvocationException>(() => method.Invoke(Subject, new object[] { "10", false }));
 
             thrown.InnerException.Should().BeOfType<BookInfoException>();
         }
@@ -511,6 +511,50 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
             authorResource.Works.Should().Contain(x => x.ForeignId == 10);
             authorResource.Works.Should().Contain(x => x.ForeignId == 20);
             authorResource.Works.Should().NotContain(x => x.ForeignId == 30);
+        }
+
+        [Test]
+        public void should_not_attach_series_link_whose_id_names_two_books()
+        {
+            var resource = new AuthorResource
+            {
+                ForeignId = 1,
+                Name = "Author",
+                Works = new List<WorkResource>
+                {
+                    new WorkResource
+                    {
+                        ForeignId = 100,
+                        Title = "Work A",
+                        Authors = new List<AuthorResource> { new AuthorResource { ForeignId = 1, Name = "Author" } },
+                        Books = new List<BookResource> { new BookResource { ForeignId = 200, Title = "Work A" } }
+                    },
+                    new WorkResource
+                    {
+                        ForeignId = 300,
+                        Title = "Work B",
+                        Authors = new List<AuthorResource> { new AuthorResource { ForeignId = 1, Name = "Author" } },
+                        Books = new List<BookResource> { new BookResource { ForeignId = 100, Title = "Work B" } }
+                    }
+                },
+                Series = new List<SeriesResource>
+                {
+                    new SeriesResource
+                    {
+                        ForeignId = 50,
+                        Title = "Series",
+                        LinkItems = new List<SeriesWorkLinkResource>
+                        {
+                            new SeriesWorkLinkResource { ForeignWorkId = 100, Primary = true }
+                        }
+                    }
+                }
+            };
+
+            var author = InvokePrivateStatic<Author>("MapAuthor", resource);
+
+            author.Books.Value.Should().HaveCount(2);
+            author.Books.Value.Should().OnlyContain(b => b.SeriesLinks.Value.Count == 0);
         }
 
         private static T InvokePrivateStatic<T>(string methodName, params object[] args)
