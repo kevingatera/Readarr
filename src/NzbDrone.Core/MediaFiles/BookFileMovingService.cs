@@ -1,6 +1,8 @@
 using System;
 using System.IO;
+using System.Linq;
 using NLog;
+using NzbDrone.Common.Crypto;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.EnsureThat;
 using NzbDrone.Core.Books;
@@ -23,34 +25,40 @@ namespace NzbDrone.Core.MediaFiles
     public class BookFileMovingService : IMoveBookFiles
     {
         private readonly IEditionService _editionService;
+        private readonly IMediaFileService _mediaFileService;
         private readonly IUpdateBookFileService _updateBookFileService;
         private readonly IBuildFileNames _buildFileNames;
         private readonly IDiskTransferService _diskTransferService;
         private readonly IDiskProvider _diskProvider;
         private readonly IRootFolderWatchingService _rootFolderWatchingService;
         private readonly IMediaFileAttributeService _mediaFileAttributeService;
+        private readonly IHashProvider _hashProvider;
         private readonly IEventAggregator _eventAggregator;
         private readonly IConfigService _configService;
         private readonly Logger _logger;
 
         public BookFileMovingService(IEditionService editionService,
+                                      IMediaFileService mediaFileService,
                                       IUpdateBookFileService updateBookFileService,
                                       IBuildFileNames buildFileNames,
                                       IDiskTransferService diskTransferService,
                                       IDiskProvider diskProvider,
                                       IRootFolderWatchingService rootFolderWatchingService,
                                       IMediaFileAttributeService mediaFileAttributeService,
+                                      IHashProvider hashProvider,
                                       IEventAggregator eventAggregator,
                                       IConfigService configService,
                                       Logger logger)
         {
             _editionService = editionService;
+            _mediaFileService = mediaFileService;
             _updateBookFileService = updateBookFileService;
             _buildFileNames = buildFileNames;
             _diskTransferService = diskTransferService;
             _diskProvider = diskProvider;
             _rootFolderWatchingService = rootFolderWatchingService;
             _mediaFileAttributeService = mediaFileAttributeService;
+            _hashProvider = hashProvider;
             _eventAggregator = eventAggregator;
             _configService = configService;
             _logger = logger;
@@ -116,8 +124,32 @@ namespace NzbDrone.Core.MediaFiles
                 throw new SameFilenameException("File not moved, source and destination are the same", bookFilePath);
             }
 
-            _rootFolderWatchingService.ReportFileSystemChangeBeginning(bookFilePath, destinationFilePath);
-            _diskTransferService.TransferFile(bookFilePath, destinationFilePath, mode);
+            if (_diskProvider.FileExists(destinationFilePath))
+            {
+                // An existing destination is only adopted when it is provably the same release and no
+                // book file row already owns it. Any other case is a conflict, and the tracked binding stays as it is.
+                if (_mediaFileService.GetFileWithPath(destinationFilePath) != null)
+                {
+                    throw new DestinationAlreadyExistsException($"Destination {destinationFilePath} is already tracked as a book file");
+                }
+
+                if (!HasSameContent(bookFilePath, destinationFilePath))
+                {
+                    throw new DestinationAlreadyExistsException($"Destination {destinationFilePath} exists with different content");
+                }
+
+                _logger.Info("Destination file {0} already holds identical content without a tracked entry, adopting it", destinationFilePath);
+
+                if (mode == TransferMode.Move)
+                {
+                    _diskProvider.DeleteFile(bookFilePath);
+                }
+            }
+            else
+            {
+                _rootFolderWatchingService.ReportFileSystemChangeBeginning(bookFilePath, destinationFilePath);
+                _diskTransferService.TransferFile(bookFilePath, destinationFilePath, mode);
+            }
 
             bookFile.Path = destinationFilePath;
 
@@ -135,6 +167,16 @@ namespace NzbDrone.Core.MediaFiles
             _mediaFileAttributeService.SetFilePermissions(destinationFilePath);
 
             return bookFile;
+        }
+
+        private bool HasSameContent(string sourcePath, string destinationPath)
+        {
+            if (_diskProvider.GetFileSize(sourcePath) != _diskProvider.GetFileSize(destinationPath))
+            {
+                return false;
+            }
+
+            return _hashProvider.ComputeMd5(sourcePath).SequenceEqual(_hashProvider.ComputeMd5(destinationPath));
         }
 
         private void EnsureTrackFolder(BookFile bookFile, LocalBook localBook, string filePath)

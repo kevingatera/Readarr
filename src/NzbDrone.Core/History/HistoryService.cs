@@ -96,7 +96,7 @@ namespace NzbDrone.Core.History
             _logger.Debug("Trying to find downloadId for {0} from history", trackedDownload.ImportedBook.Path);
 
             var bookIds = new List<int> { trackedDownload.BookInfo.Book.Id };
-            var allHistory = _historyRepository.FindDownloadHistory(trackedDownload.BookInfo.Author.Id, trackedDownload.ImportedBook.Quality);
+            var allHistory = _historyRepository.FindDownloadHistory(trackedDownload.BookInfo.Author.Id, trackedDownload.ImportedBook.Quality) ?? new List<EntityHistory>();
 
             //Find download related items for these episodes
             var booksHistory = allHistory.Where(h => bookIds.Contains(h.BookId)).ToList();
@@ -211,14 +211,11 @@ namespace NzbDrone.Core.History
 
         public void Handle(TrackImportedEvent message)
         {
-            if (!message.NewDownload)
-            {
-                return;
-            }
-
             var downloadId = message.DownloadId;
 
-            if (downloadId.IsNullOrWhiteSpace())
+            // Only a tracked import has verified download provenance. A library scan must not
+            // borrow a grab's download id by matching book and quality.
+            if (message.NewDownload && downloadId.IsNullOrWhiteSpace())
             {
                 downloadId = FindDownloadId(message);
             }
