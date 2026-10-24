@@ -163,5 +163,85 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Specifications
             decision.Accepted.Should().BeFalse();
             decision.Reason.Should().Contain("Book match is not close enough");
         }
+
+        [Test]
+        public void should_accept_metadata_poor_any_edition_match_between_old_cutoff_and_limit()
+        {
+            var distance = new Distance();
+            distance.Add("source", 0.0);
+            distance.Add("author", 0.0);
+            distance.Add("book", 0.0);
+            distance.Add("isbn_missing", 1.0);
+            distance.Add("edition_isbn_missing", 1.0);
+
+            distance.NormalizedDistance().Should().BeGreaterThan(0.20);
+            distance.NormalizedDistance().Should().BeLessOrEqualTo(0.40);
+
+            var decision = _subject.IsSatisfiedBy(AnyEditionItem(distance), null);
+
+            decision.Accepted.Should().BeTrue();
+        }
+
+        [Test]
+        public void should_reject_metadata_poor_any_edition_match_above_limit()
+        {
+            var distance = new Distance();
+            distance.Add("author", 0.0);
+            distance.Add("book", 0.0);
+            distance.Add("edition_isbn_missing", 1.0);
+            distance.Add("publisher", 1.0);
+
+            distance.NormalizedDistance().Should().BeGreaterThan(0.40);
+
+            var decision = _subject.IsSatisfiedBy(AnyEditionItem(distance), null);
+
+            decision.Accepted.Should().BeFalse();
+        }
+
+        [Test]
+        public void should_reject_metadata_poor_any_edition_match_with_conflicting_isbn()
+        {
+            // The zero-valued recording_id penalty only adds weight so the distance lands inside the window.
+            var distance = new Distance();
+            distance.Add("author", 0.0);
+            distance.Add("book", 0.0);
+            distance.Add("recording_id", 0.0);
+            distance.Add("isbn", 1.0);
+
+            distance.NormalizedDistance().Should().BeInRange(0.20, 0.40);
+
+            var decision = _subject.IsSatisfiedBy(AnyEditionItem(distance), null);
+
+            decision.Accepted.Should().BeFalse();
+        }
+
+        [Test]
+        public void should_reject_metadata_poor_any_edition_match_with_wrong_book()
+        {
+            var distance = new Distance();
+            distance.Add("author", 0.0);
+            distance.Add("book", 1.0);
+            distance.Add("edition_isbn_missing", 1.0);
+            distance.Add("recording_id", 0.0);
+
+            distance.NormalizedDistance().Should().BeInRange(0.20, 0.40);
+
+            var decision = _subject.IsSatisfiedBy(AnyEditionItem(distance), null);
+
+            decision.Accepted.Should().BeFalse();
+        }
+
+        private static LocalEdition AnyEditionItem(Distance distance)
+        {
+            return new LocalEdition
+            {
+                NewDownload = true,
+                Distance = distance,
+                Edition = new Edition
+                {
+                    Book = new LazyLoaded<Book>(new Book { AnyEditionOk = true })
+                }
+            };
+        }
     }
 }
