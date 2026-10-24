@@ -263,5 +263,29 @@ namespace NzbDrone.Core.Test.MediaCoverTests
             Mocker.GetMock<IImageResizer>()
                   .Verify(v => v.Resize(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>()), Times.Exactly(2));
         }
+
+        [Test]
+        public void should_use_first_edition_if_no_edition_is_monitored()
+        {
+            _edition.Monitored = false;
+
+            Mocker.GetMock<ICoverExistsSpecification>()
+                  .Setup(v => v.AlreadyExists(It.IsAny<DateTime?>(), It.IsAny<long?>(), It.IsAny<string>()))
+                  .Returns(true);
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Setup(v => v.FileExists(It.IsAny<string>()))
+                  .Returns(true);
+
+            Mocker.GetMock<IBookService>()
+                  .Setup(v => v.GetBooksByAuthor(It.IsAny<int>()))
+                  .Returns(new List<Book> { _book });
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Setup(v => v.GetFileSize(It.IsAny<string>()))
+                  .Returns(1000);
+
+            Assert.DoesNotThrow(() => Subject.HandleAsync(new AuthorRefreshCompleteEvent(_author)));
+        }
     }
 }
