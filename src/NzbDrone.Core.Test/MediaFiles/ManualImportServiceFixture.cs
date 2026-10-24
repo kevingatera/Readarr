@@ -267,7 +267,6 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
-        [Test]
         public void should_use_tracked_download_author_context_for_single_file_manual_import()
         {
             NzbDrone.Core.MediaFiles.BookImport.IdentificationOverrides capturedOverride = null;
