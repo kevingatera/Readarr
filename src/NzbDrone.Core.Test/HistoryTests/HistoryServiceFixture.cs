@@ -70,5 +70,36 @@ namespace NzbDrone.Core.Test.HistoryTests
             Mocker.GetMock<IHistoryRepository>()
                 .Verify(v => v.Insert(It.Is<EntityHistory>(h => h.SourceTitle == Path.GetFileNameWithoutExtension(localTrack.Path))));
         }
+
+        [Test]
+        public void should_record_history_for_existing_file_imports()
+        {
+            var author = Builder<Author>.CreateNew().With(x => x.Id = 44).Build();
+            var book = Builder<Book>.CreateNew().With(x => x.Id = 55).Build();
+            var trackFile = Builder<BookFile>.CreateNew()
+                .With(x => x.Id = 66)
+                .With(x => x.Path = @"C:\Test\Books\Author - Book.m4b")
+                .With(f => f.Author = author)
+                .Build();
+
+            var localTrack = new LocalBook
+            {
+                Author = author,
+                Book = book,
+                Path = @"C:\Test\Unsorted\Author - Book.m4b",
+                Size = 1234,
+                Quality = new QualityModel(Quality.M4B)
+            };
+
+            Subject.Handle(new TrackImportedEvent(localTrack, trackFile, new List<BookFile>(), false, null));
+
+            Mocker.GetMock<IHistoryRepository>()
+                .Verify(v => v.Insert(It.Is<EntityHistory>(h =>
+                    h.EventType == EntityHistoryEventType.BookFileImported &&
+                    h.AuthorId == author.Id &&
+                    h.BookId == book.Id &&
+                    h.Data["DroppedPath"] == localTrack.Path &&
+                    h.Data["ImportedPath"] == trackFile.Path)), Times.Once());
+        }
     }
 }
