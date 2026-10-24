@@ -258,6 +258,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             authors.AddRange(fileAuthors.Where(a => a.IsNotNullOrWhiteSpace()));
             authors.AddRange(localTracks.Select(x => x.FolderTrackInfo?.AuthorName).Where(x => x.IsNotNullOrWhiteSpace()));
             authors.AddRange(localTracks.Select(x => x.DownloadClientBookInfo?.AuthorName).Where(x => x.IsNotNullOrWhiteSpace()));
+            authors.AddRange(localTracks.Select(x => x.HistoryBookInfo?.AuthorName).Where(x => x.IsNotNullOrWhiteSpace()));
             authors.AddRange(localTracks
                 .Select(x => Parser.Parser.ParseBookTitle(Path.GetFileNameWithoutExtension(x.Path))?.AuthorName)
                 .Where(x => x.IsNotNullOrWhiteSpace()));
@@ -385,6 +386,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                 localTracks.MostCommon(x => x.FileTrackInfo.BookTitle),
                 localTracks.MostCommon(x => x.FolderTrackInfo?.BookTitle),
                 localTracks.MostCommon(x => x.DownloadClientBookInfo?.BookTitle),
+                localTracks.MostCommon(x => x.HistoryBookInfo?.BookTitle),
                 localTracks.MostCommon(x => Path.GetFileNameWithoutExtension(x.Path)),
                 localTracks.MostCommon(x => Path.GetFileName(Path.GetDirectoryName(x.Path) ?? string.Empty))
             };

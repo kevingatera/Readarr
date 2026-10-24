@@ -395,6 +395,70 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
+        public void should_pass_grab_title_to_identification_when_grab_book_is_applied()
+        {
+            GivenBook(42, "Dark Operator");
+            GivenGrabHistory(GrabbedRow(42, DateTime.UtcNow));
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Dark Operator (2019) [FLAC]";
+
+            ImportDecisionMakerInfo capturedInfo = null;
+
+            Mocker.GetMock<IMakeImportDecision>()
+                .Setup(v => v.GetImportDecisions(It.IsAny<List<IFileInfo>>(), It.IsAny<IdentificationOverrides>(), It.IsAny<ImportDecisionMakerInfo>(), It.IsAny<ImportDecisionMakerConfig>()))
+                .Callback<List<IFileInfo>, IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((files, idOverrides, info, config) => capturedInfo = info)
+                .Returns(new List<ImportDecision<LocalBook>>());
+
+            Mocker.GetMock<IImportApprovedBooks>()
+                .Setup(s => s.Import(It.IsAny<List<ImportDecision<LocalBook>>>(), It.IsAny<bool>(), It.IsAny<DownloadClientItem>(), It.IsAny<ImportMode>()))
+                .Returns(new List<ImportResult>());
+
+            Subject.ProcessPath(_droneFactory, ImportMode.Auto, _trackedDownload.RemoteBook.Author, _trackedDownload.DownloadItem);
+
+            capturedInfo.Should().NotBeNull();
+            capturedInfo.HistoryBookInfo.Should().NotBeNull();
+            capturedInfo.HistoryBookInfo.BookTitle.Should().Contain("Dark Operator");
+        }
+
+        [Test]
+        public void should_not_apply_older_grab_book_when_latest_grab_names_several_books()
+        {
+            GivenBook(42, "Dark Operator");
+            GivenBook(43, "Some Other Book");
+            GivenBook(44, "Another Book");
+
+            var latest = DateTime.UtcNow;
+
+            GivenGrabHistory(
+                new EntityHistory
+                {
+                    EventType = EntityHistoryEventType.Grabbed,
+                    BookId = 42,
+                    Date = latest.AddDays(-30),
+                    SourceTitle = "Nick Cole - Dark Operator [FLAC]"
+                },
+                new EntityHistory
+                {
+                    EventType = EntityHistoryEventType.Grabbed,
+                    BookId = 43,
+                    Date = latest,
+                    SourceTitle = "Someone - Some Other Book [FLAC]"
+                },
+                new EntityHistory
+                {
+                    EventType = EntityHistoryEventType.Grabbed,
+                    BookId = 44,
+                    Date = latest,
+                    SourceTitle = "Someone - Another Book [FLAC]"
+                });
+
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Dark Operator (2019) [FLAC]";
+
+            var capturedOverrides = ProcessAndCaptureOverrides();
+
+            capturedOverrides.Book.Should().BeNull();
+        }
+
+        [Test]
         public void should_skip_grab_history_book_when_reused_download_title_names_another_book()
         {
             GivenBook(42, "Dark Operator");
