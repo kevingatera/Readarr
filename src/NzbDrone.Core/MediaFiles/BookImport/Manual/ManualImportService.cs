@@ -95,15 +95,18 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
 
                 if (trackedDownload == null)
                 {
-                    return new List<ManualImportItem>();
+                    _logger.Warn("Tracked download {0} was not available while loading manual import candidates", downloadId);
+                    downloadId = null;
                 }
-
-                if (trackedDownload.ImportItem == null)
+                else
                 {
-                    trackedDownload.ImportItem = _provideImportItemService.ProvideImportItem(trackedDownload.DownloadItem, trackedDownload.ImportItem);
-                }
+                    if (trackedDownload.ImportItem == null)
+                    {
+                        trackedDownload.ImportItem = _provideImportItemService.ProvideImportItem(trackedDownload.DownloadItem, trackedDownload.ImportItem);
+                    }
 
-                path = trackedDownload.ImportItem.OutputPath.FullPath;
+                    path = trackedDownload.ImportItem.OutputPath.FullPath;
+                }
             }
 
             if (!_diskProvider.FolderExists(path))
@@ -114,6 +117,16 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 }
 
                 var files = new List<IFileInfo> { _diskProvider.GetFileInfo(path) };
+                author = author ?? _parsingService.GetAuthor(Path.GetFileNameWithoutExtension(path));
+
+                var itemInfo = new ImportDecisionMakerInfo
+                {
+                    ParsedBookInfo = Parser.Parser.ParseBookTitle(Path.GetFileNameWithoutExtension(path))
+                };
+                var idOverrides = new IdentificationOverrides
+                {
+                    Author = author
+                };
 
                 var config = new ImportDecisionMakerConfig
                 {
@@ -121,11 +134,12 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                     NewDownload = true,
                     SingleRelease = false,
                     IncludeExisting = !replaceExistingFiles,
+                    AllowSameFileMatch = replaceExistingFiles,
                     AddNewAuthors = false,
                     KeepAllEditions = true
                 };
 
-                var decision = _importDecisionMaker.GetImportDecisions(files, null, null, config);
+                var decision = _importDecisionMaker.GetImportDecisions(files, idOverrides, itemInfo, config);
                 var result = MapItem(decision.First(), downloadId, replaceExistingFiles, false);
 
                 return new List<ManualImportItem> { result };
@@ -152,14 +166,14 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
             }
 
             var authorFiles = _diskScanService.GetBookFiles(folder).ToList();
-            var idOverrides = new IdentificationOverrides
-            {
-                Author = author
-            };
             var itemInfo = new ImportDecisionMakerInfo
             {
                 DownloadClientItem = downloadClientItem,
                 ParsedBookInfo = Parser.Parser.ParseBookTitle(directoryInfo.Name)
+            };
+            var idOverrides = new IdentificationOverrides
+            {
+                Author = author
             };
             var config = new ImportDecisionMakerConfig
             {
@@ -167,6 +181,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 NewDownload = true,
                 SingleRelease = false,
                 IncludeExisting = !replaceExistingFiles,
+                AllowSameFileMatch = replaceExistingFiles,
                 AddNewAuthors = false,
                 KeepAllEditions = true
             };
@@ -214,6 +229,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                     NewDownload = true,
                     SingleRelease = true,
                     IncludeExisting = !replaceExistingFiles,
+                    AllowSameFileMatch = replaceExistingFiles,
                     AddNewAuthors = false
                 };
                 var decisions = _importDecisionMaker.GetImportDecisions(files, idOverride, null, config);
@@ -364,25 +380,41 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 }
 
                 var downloadId = importBookId.Select(x => x.DownloadId).FirstOrDefault(x => x.IsNotNullOrWhiteSpace());
-                if (downloadId.IsNullOrWhiteSpace())
-                {
-                    imported.AddRange(_importApprovedBooks.Import(bookImportDecisions, message.ReplaceExistingFiles, null, message.ImportMode));
-                }
-                else
-                {
-                    var trackedDownload = _trackedDownloadService.Find(downloadId);
-                    var importResults = _importApprovedBooks.Import(bookImportDecisions, message.ReplaceExistingFiles, trackedDownload.DownloadItem, message.ImportMode);
+                var trackedDownload = ResolveTrackedDownload(importBookId.ToList(), downloadId);
+                var downloadClientItem = trackedDownload?.DownloadItem;
 
-                    imported.AddRange(importResults);
+                var importMode = message.ImportMode;
 
-                    foreach (var importResult in importResults)
+                if (downloadClientItem == null && downloadId.IsNotNullOrWhiteSpace())
+                {
+                    // Auto only moves when the client says it is done with the files. Without the
+                    // client item that cannot be known, and moving a payload that is still seeding
+                    // strands the torrent (missing files, tracker hit and run). Copy, which
+                    // hardlinks when enabled, is safe either way.
+                    if (importMode == ImportMode.Auto)
                     {
-                        importedTrackedDownload.Add(new ManuallyImportedFile
-                        {
-                            TrackedDownload = trackedDownload,
-                            ImportResult = importResult
-                        });
+                        importMode = ImportMode.Copy;
                     }
+
+                    _logger.Warn("Tracked download {0} was not available during manual import, importing without tracked download context (mode {1})", downloadId, importMode);
+                }
+
+                var importResults = _importApprovedBooks.Import(bookImportDecisions, message.ReplaceExistingFiles, downloadClientItem, importMode);
+
+                imported.AddRange(importResults);
+
+                if (downloadClientItem == null)
+                {
+                    continue;
+                }
+
+                foreach (var importResult in importResults)
+                {
+                    importedTrackedDownload.Add(new ManuallyImportedFile
+                    {
+                        TrackedDownload = trackedDownload,
+                        ImportResult = importResult
+                    });
                 }
             }
 
@@ -391,14 +423,18 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
             foreach (var groupedTrackedDownload in importedTrackedDownload.GroupBy(i => i.TrackedDownload.DownloadItem.DownloadId).ToList())
             {
                 var trackedDownload = groupedTrackedDownload.First().TrackedDownload;
-                var outputPath = trackedDownload.ImportItem.OutputPath.FullPath;
 
-                if (_diskProvider.FolderExists(outputPath))
+                if (trackedDownload.ImportItem != null && !trackedDownload.ImportItem.OutputPath.IsEmpty)
                 {
-                    if (_downloadedTracksImportService.ShouldDeleteFolder(_diskProvider.GetDirectoryInfo(outputPath)) &&
-                        trackedDownload.DownloadItem.CanMoveFiles)
+                    var outputPath = trackedDownload.ImportItem.OutputPath.FullPath;
+
+                    if (_diskProvider.FolderExists(outputPath))
                     {
-                        _diskProvider.DeleteFolder(outputPath, true);
+                        if (_downloadedTracksImportService.ShouldDeleteFolder(_diskProvider.GetDirectoryInfo(outputPath)) &&
+                            trackedDownload.DownloadItem.CanMoveFiles)
+                        {
+                            _diskProvider.DeleteFolder(outputPath, true);
+                        }
                     }
                 }
 
@@ -410,9 +446,98 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 if (allItemsImported)
                 {
                     trackedDownload.State = TrackedDownloadState.Imported;
-                    _eventAggregator.PublishEvent(new DownloadCompletedEvent(trackedDownload, imported.First().ImportDecision.Item.Author.Id));
+                    var authorId = groupedTrackedDownload
+                        .Select(c => c.ImportResult.ImportDecision.Item.Author?.Id ?? 0)
+                        .FirstOrDefault(id => id > 0);
+
+                    if (authorId > 0)
+                    {
+                        _eventAggregator.PublishEvent(new DownloadCompletedEvent(trackedDownload, authorId));
+                    }
                 }
             }
+        }
+
+        private TrackedDownload ResolveTrackedDownload(List<ManualImportFile> files, string downloadId)
+        {
+            if (downloadId.IsNotNullOrWhiteSpace())
+            {
+                return _trackedDownloadService.Find(downloadId);
+            }
+
+            return ResolveTrackedDownloadFromPaths(files.Select(x => x.Path).ToList());
+        }
+
+        private TrackedDownload ResolveTrackedDownloadFromPaths(List<string> filePaths)
+        {
+            var paths = filePaths
+                .Where(x => x.IsNotNullOrWhiteSpace())
+                .Distinct(PathEqualityComparer.Instance)
+                .ToList();
+
+            if (!paths.Any())
+            {
+                return null;
+            }
+
+            var trackedDownloads = _trackedDownloadService.GetTrackedDownloads();
+            var matches = trackedDownloads.Where(x => MatchesTrackedDownloadPath(x, paths)).ToList();
+
+            if (matches.Count == 1)
+            {
+                _logger.Debug("Resolved tracked download {0} from manual import path(s)", matches[0].DownloadItem?.DownloadId);
+                return matches[0];
+            }
+
+            if (matches.Count > 1)
+            {
+                _logger.Warn("Unable to resolve tracked download for manual import paths due to ambiguity ({0} matches)", matches.Count);
+            }
+
+            return null;
+        }
+
+        private bool MatchesTrackedDownloadPath(TrackedDownload trackedDownload, List<string> filePaths)
+        {
+            if (trackedDownload == null)
+            {
+                return false;
+            }
+
+            if (trackedDownload.ImportItem == null)
+            {
+                trackedDownload.ImportItem = _provideImportItemService.ProvideImportItem(trackedDownload.DownloadItem, trackedDownload.ImportItem);
+            }
+
+            var outputPath = trackedDownload.ImportItem?.OutputPath.FullPath;
+
+            if (outputPath.IsNullOrWhiteSpace())
+            {
+                outputPath = trackedDownload.DownloadItem?.OutputPath.FullPath;
+            }
+
+            if (outputPath.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            foreach (var filePath in filePaths)
+            {
+                if (outputPath.PathEquals(filePath) || outputPath.IsParentPath(filePath))
+                {
+                    return true;
+                }
+
+                var fileDirectory = Path.GetDirectoryName(filePath);
+
+                if (fileDirectory.IsNotNullOrWhiteSpace() &&
+                    outputPath.PathEquals(fileDirectory))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 }
