@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Reflection;
 using System.Text.Json;
 using FluentAssertions;
@@ -8,6 +9,7 @@ using Moq;
 using NUnit.Framework;
 using NzbDrone.Common.Http;
 using NzbDrone.Core.Books;
+using NzbDrone.Core.Http;
 using NzbDrone.Core.MetadataSource;
 using NzbDrone.Core.MetadataSource.BookInfo;
 using NzbDrone.Core.Test.Framework;
@@ -65,6 +67,69 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
             author.Books.Value.Should().HaveCount(1);
             author.Books.Value[0].ForeignBookId.Should().Be("10");
             author.Books.Value[0].Title.Should().Be("1812");
+        }
+
+        // Regression: a work carrying no author/contributor information at all
+        // (sparse upstream data, e.g. under load) used to be silently dropped by
+        // MapAuthor, which made the refresh see fewer books than are held locally
+        // and caused RefreshEntityServiceBase to delete the "missing" local books.
+        // Such a work is now attributed to the author being mapped.
+        [Test]
+        public void should_keep_work_when_work_has_no_author_information()
+        {
+            var resource = new AuthorResource
+            {
+                ForeignId = 1,
+                Name = "Eric Flint",
+                Works = new List<WorkResource>
+                {
+                    new WorkResource
+                    {
+                        ForeignId = 10,
+                        Title = "1812",
+                        Books = null,
+                        Authors = null
+                    }
+                },
+                Series = new List<SeriesResource>()
+            };
+
+            var author = InvokePrivateStatic<Author>("MapAuthor", resource);
+
+            author.Should().NotBeNull();
+            author.Books.Value.Should().HaveCount(1);
+            author.Books.Value[0].ForeignBookId.Should().Be("10");
+        }
+
+        // Sanity: a work that explicitly lists a DIFFERENT author is still
+        // dropped by MapAuthor (only the no-author-data case is preserved).
+        [Test]
+        public void should_still_drop_work_that_belongs_to_a_different_author()
+        {
+            var resource = new AuthorResource
+            {
+                ForeignId = 1,
+                Name = "Eric Flint",
+                Works = new List<WorkResource>
+                {
+                    new WorkResource
+                    {
+                        ForeignId = 10,
+                        Title = "Someone Else's Work",
+                        Books = null,
+                        Authors = new List<AuthorResource>
+                        {
+                            new AuthorResource { ForeignId = 2, Name = "Someone Else" }
+                        }
+                    }
+                },
+                Series = new List<SeriesResource>()
+            };
+
+            var author = InvokePrivateStatic<Author>("MapAuthor", resource);
+
+            author.Should().NotBeNull();
+            author.Books.Value.Should().BeEmpty();
         }
 
         [Test]
@@ -275,6 +340,33 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
                 Books = new List<BookResource> { new BookResource { ForeignId = editionId, Title = $"Work {workId}" } },
                 Authors = authorIds.Select(id => new AuthorResource { ForeignId = id, Name = authorName }).ToList()
             };
+        }
+
+        // A work that redirects to an author page omitting it is an unconfirmed absence, not a 404.
+        [Test]
+        public void should_report_fetch_failure_not_not_found_when_redirected_author_page_omits_the_work()
+        {
+            Mocker.GetMock<IMetadataRequestBuilder>()
+                .Setup(x => x.GetRequestBuilder())
+                .Returns(new HttpRequestBuilder("http://bookinfo.test/{route}").CreateFactory());
+
+            var redirect = new HttpHeader { { "Location", "http://bookinfo.test/author/1" } };
+
+            Mocker.GetMock<IHttpClient>()
+                .Setup(x => x.Get(It.IsAny<HttpRequest>()))
+                .Returns<HttpRequest>(r => new HttpResponse(r, redirect, string.Empty, HttpStatusCode.Found));
+
+            Mocker.GetMock<ICachedHttpResponseService>()
+                .Setup(x => x.Get(It.IsAny<HttpRequest>(), It.IsAny<bool>(), It.IsAny<TimeSpan>()))
+                .Returns<HttpRequest, bool, TimeSpan>((r, useCache, ttl) => new HttpResponse(
+                    r,
+                    new HttpHeader(),
+                    "{\"ForeignId\":1,\"Name\":\"Eric Flint\",\"Works\":[{\"ForeignId\":11,\"Title\":\"Other\"}],\"Series\":[]}"));
+
+            var method = typeof(BookInfoProxy).GetMethod("PollBook", BindingFlags.NonPublic | BindingFlags.Instance);
+            var thrown = Assert.Throws<TargetInvocationException>(() => method.Invoke(Subject, new object[] { "10" }));
+
+            thrown.InnerException.Should().BeOfType<BookInfoException>();
         }
 
         private static T InvokePrivateStatic<T>(string methodName, params object[] args)

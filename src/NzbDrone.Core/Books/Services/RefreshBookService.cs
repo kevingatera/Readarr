@@ -13,6 +13,7 @@ using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.Messaging.Commands;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.MetadataSource;
+using NzbDrone.Core.MetadataSource.BookInfo;
 using NzbDrone.Core.RootFolders;
 
 namespace NzbDrone.Core.Books
@@ -81,8 +82,26 @@ namespace NzbDrone.Core.Books
             try
             {
                 var tuple = _bookInfo.GetBookInfo(book.ForeignBookId);
-                var author = _authorInfo.GetAuthorInfo(tuple.Item1);
                 var newbook = tuple.Item2;
+                Author author;
+
+                try
+                {
+                    author = _authorInfo.GetAuthorInfo(tuple.Item1);
+                }
+                catch (BookInfoException e)
+                {
+                    // The work was fetched, so a failed author fetch should not fail the book.
+                    var localAuthor = book.Author?.Value ?? _authorService.GetAuthor(book.AuthorId);
+
+                    if (localAuthor?.Metadata?.Value == null)
+                    {
+                        throw;
+                    }
+
+                    _logger.Warn(e, "Falling back to local author data for book {0} ({1}) after author fetch failed", book.Title, book.ForeignBookId);
+                    author = localAuthor;
+                }
 
                 newbook.Author = author;
                 newbook.AuthorMetadata = author.Metadata.Value;
@@ -106,12 +125,14 @@ namespace NzbDrone.Core.Books
 
             var book = remote.SingleOrDefault(x => x.ForeignBookId == local.ForeignBookId);
 
-            if (book == null && ShouldDelete(local))
-            {
-                return result;
-            }
+            // Listed in the unfiltered payload but not the filtered one: the metadata profile
+            // removed it on purpose, so the normal delete rules decide without a lookup.
+            var profileFiltered = book == null && data?.Books?.Value?.Any(x => x.ForeignBookId == local.ForeignBookId) == true;
 
-            if (book == null)
+            // Missing from the payload proves nothing, because a truncated author fetch looks the same.
+            // Only a direct lookup confirms absence: a 404 returns null, any other failure throws
+            // BookInfoException and aborts the refresh with nothing deleted.
+            if (book == null && !profileFiltered)
             {
                 data = GetSkyhookData(local);
                 book = data?.Books?.Value?.SingleOrDefault(x => x.ForeignBookId == local.ForeignBookId);
@@ -357,6 +378,11 @@ namespace NzbDrone.Core.Books
         public bool RefreshBookInfo(Book book)
         {
             var data = GetSkyhookData(book);
+
+            if (data == null)
+            {
+                return false;
+            }
 
             return RefreshBookInfo(book, data.Books, data, false);
         }

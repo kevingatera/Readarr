@@ -64,6 +64,19 @@ namespace NzbDrone.Core.Books
             return _seriesService.FindById(local.ForeignSeriesId);
         }
 
+        protected override bool ShouldDelete(Series local)
+        {
+            // A series that is missing from the payload is removed only once no links remain.
+            // The payload can be partial, so its silence is not proof the series is gone.
+            return !_linkService.GetLinksBySeries(local.Id).Any();
+        }
+
+        protected override bool CanRemoveChild(SeriesBookLink local)
+        {
+            // Links leave with their book or series. A partial series payload cannot prove a link is obsolete.
+            return false;
+        }
+
         protected override void SaveEntity(Series local)
         {
             // Use UpdateMany to avoid firing the book edited event
