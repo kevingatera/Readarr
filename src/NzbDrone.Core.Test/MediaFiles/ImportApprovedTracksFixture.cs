@@ -110,6 +110,221 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
+        public void should_assign_unique_parts_to_multi_file_audiobooks_with_missing_parts()
+        {
+            _approvedDecisions[0].Item.Part = 0;
+
+            var secondDecision = new ImportDecision<LocalBook>(new LocalBook
+            {
+                Author = _approvedDecisions[0].Item.Author,
+                Book = _approvedDecisions[0].Item.Book,
+                Edition = _approvedDecisions[0].Item.Edition,
+                Part = 0,
+                Path = Path.Combine(_approvedDecisions[0].Item.Author.Path, "Alien Ant Farm - 02 - Pilot.mp3"),
+                Quality = new QualityModel(Quality.MP3),
+                FileTrackInfo = new ParsedTrackInfo()
+            });
+            var importedFiles = new List<BookFile>();
+
+            Mocker.GetMock<IUpgradeMediaFiles>()
+                .Setup(s => s.UpgradeBookFile(It.IsAny<BookFile>(), It.IsAny<LocalBook>(), It.IsAny<bool>()))
+                .Callback<BookFile, LocalBook, bool>((bookFile, localBook, copyOnly) => importedFiles.Add(bookFile))
+                .Returns(new BookFileMoveResult());
+
+            var results = Subject.Import(new[] { _approvedDecisions[0], secondDecision }.ToList(), true);
+
+            results.Count(x => x.Result == ImportResultType.Imported).Should().Be(2);
+            importedFiles.Should().HaveCount(2);
+            importedFiles.Select(x => x.Part).Should().BeEquivalentTo(new[] { 1, 2 });
+            importedFiles.Select(x => x.PartCount).Should().OnlyContain(x => x == 2);
+        }
+
+        [Test]
+        public void should_not_fail_import_when_no_edition_is_monitored_after_import()
+        {
+            Mocker.GetMock<IEditionService>()
+                .Setup(s => s.SetMonitored(It.IsAny<Edition>()))
+                .Returns(new List<Edition>());
+
+            Subject.Invoking(s => s.Import(_approvedDecisions, false)).Should().NotThrow();
+
+            Mocker.GetMock<IEventAggregator>()
+                .Verify(v => v.PublishEvent(It.IsAny<BookImportedEvent>()), Times.Never());
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.AddMany(It.Is<List<BookFile>>(files => files.Count == 1)), Times.Once());
+
+            ExceptionVerification.ExpectedWarns(1);
+        }
+
+        [Test]
+        public void should_reuse_existing_persisted_edition_when_import_decision_has_transient_edition()
+        {
+            var persistedEdition = Builder<Edition>.CreateNew()
+                .With(x => x.Id = 12)
+                .With(x => x.BookId = _approvedDecisions.First().Item.Book.Id)
+                .With(x => x.ForeignEditionId = "existing-foreign-edition")
+                .With(x => x.Monitored = true)
+                .Build();
+
+            var transientEdition = Builder<Edition>.CreateNew()
+                .With(x => x.Id = 0)
+                .With(x => x.BookId = _approvedDecisions.First().Item.Book.Id)
+                .With(x => x.ForeignEditionId = persistedEdition.ForeignEditionId)
+                .With(x => x.Monitored = false)
+                .Build();
+
+            var decision = _approvedDecisions.First();
+            decision.Item.Edition = transientEdition;
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(s => s.GetEditionByForeignEditionId(persistedEdition.ForeignEditionId))
+                .Returns(persistedEdition);
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(s => s.SetMonitored(persistedEdition))
+                .Returns(new List<Edition> { persistedEdition });
+
+            Subject.Import(new List<ImportDecision<LocalBook>> { decision }, false);
+
+            decision.Item.Edition.Should().BeSameAs(persistedEdition);
+
+            Mocker.GetMock<IEditionService>()
+                .Verify(v => v.SetMonitored(persistedEdition), Times.Once());
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.AddMany(It.Is<List<BookFile>>(files => files.Single().EditionId == persistedEdition.Id)), Times.Once());
+        }
+
+        [Test]
+        public void should_resolve_book_edition_when_import_decision_has_no_edition()
+        {
+            var decision = _approvedDecisions.First();
+            var book = decision.Item.Book;
+            var existingEdition = decision.Item.Edition;
+
+            book.ForeignEditionId = existingEdition.ForeignEditionId;
+            decision.Item.Edition = null;
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(s => s.GetEditionByForeignEditionId(existingEdition.ForeignEditionId))
+                .Returns(existingEdition);
+
+            Subject.Import(new List<ImportDecision<LocalBook>> { decision }, false);
+
+            decision.Item.Edition.Should().BeSameAs(existingEdition);
+
+            Mocker.GetMock<IEditionService>()
+                .Verify(v => v.SetMonitored(existingEdition), Times.Once());
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.AddMany(It.Is<List<BookFile>>(files => files.Single().EditionId == existingEdition.Id)), Times.Once());
+        }
+
+        [Test]
+        public void should_reject_when_existing_persisted_edition_belongs_to_different_book()
+        {
+            var foreignEditionId = "cross-book-edition";
+            var transientEdition = Builder<Edition>.CreateNew()
+                .With(x => x.Id = 0)
+                .With(x => x.BookId = _approvedDecisions.First().Item.Book.Id)
+                .With(x => x.ForeignEditionId = foreignEditionId)
+                .With(x => x.Monitored = false)
+                .Build();
+
+            var wrongBookEdition = Builder<Edition>.CreateNew()
+                .With(x => x.Id = 77)
+                .With(x => x.BookId = _approvedDecisions.First().Item.Book.Id + 999)
+                .With(x => x.ForeignEditionId = foreignEditionId)
+                .With(x => x.Monitored = true)
+                .Build();
+
+            var decision = _approvedDecisions.First();
+            decision.Item.Edition = transientEdition;
+
+            Mocker.GetMock<IEditionService>()
+                .Setup(s => s.GetEditionByForeignEditionId(foreignEditionId))
+                .Returns(wrongBookEdition);
+
+            var result = Subject.Import(new List<ImportDecision<LocalBook>> { decision }, false);
+
+            result.Should().ContainSingle();
+            result.Single().Result.Should().Be(ImportResultType.Rejected);
+
+            Mocker.GetMock<IEditionService>()
+                .Verify(v => v.SetMonitored(It.IsAny<Edition>()), Times.Never());
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.AddMany(It.IsAny<List<BookFile>>()), Times.Never());
+
+            ExceptionVerification.ExpectedWarns(1);
+        }
+
+        [Test]
+        public void should_import_when_track_info_is_missing()
+        {
+            _approvedDecisions.First().Item.FileTrackInfo = null;
+
+            var result = Subject.Import(_approvedDecisions, false);
+
+            result.Should().ContainSingle(d => d.Result == ImportResultType.Imported);
+
+            Mocker.GetMock<IUpgradeMediaFiles>()
+                .Verify(v => v.UpgradeBookFile(It.IsAny<BookFile>(), It.IsAny<LocalBook>(), It.IsAny<bool>()), Times.Once());
+        }
+
+        [Test]
+        public void should_reject_persisted_edition_owned_by_another_book()
+        {
+            var decision = _approvedDecisions.First();
+            decision.Item.Edition = Builder<Edition>.CreateNew()
+                .With(x => x.Id = 77)
+                .With(x => x.BookId = decision.Item.Book.Id + 999)
+                .With(x => x.ForeignEditionId = "persisted-other-book-edition")
+                .With(x => x.Monitored = true)
+                .Build();
+
+            var result = Subject.Import(new List<ImportDecision<LocalBook>> { decision }, false);
+
+            result.Should().ContainSingle();
+            result.Single().Result.Should().Be(ImportResultType.Rejected);
+
+            Mocker.GetMock<IEditionService>()
+                .Verify(v => v.SetMonitored(It.IsAny<Edition>()), Times.Never());
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.AddMany(It.IsAny<List<BookFile>>()), Times.Never());
+
+            ExceptionVerification.ExpectedWarns(1);
+        }
+
+        [Test]
+        public void should_import_duplicate_source_file_once()
+        {
+            var first = _approvedDecisions.First();
+            var duplicate = new ImportDecision<LocalBook>(new LocalBook
+            {
+                Author = first.Item.Author,
+                Book = first.Item.Book,
+                Edition = first.Item.Edition,
+                Part = 1,
+                Path = first.Item.Path,
+                Quality = new QualityModel(Quality.MP3),
+                Size = 1.Megabytes(),
+                FileTrackInfo = new ParsedTrackInfo()
+            });
+
+            var result = Subject.Import(new List<ImportDecision<LocalBook>> { first, duplicate }, false);
+
+            result.Should().HaveCount(2);
+            result.Should().ContainSingle(d => d.Result == ImportResultType.Imported);
+            result.Should().ContainSingle(d => d.Result == ImportResultType.Rejected);
+
+            Mocker.GetMock<IUpgradeMediaFiles>()
+                .Verify(v => v.UpgradeBookFile(It.IsAny<BookFile>(), It.IsAny<LocalBook>(), It.IsAny<bool>()), Times.Once());
+        }
+
+        [Test]
         public void should_only_import_approved()
         {
             var all = new List<ImportDecision<LocalBook>>();
@@ -256,6 +471,54 @@ namespace NzbDrone.Core.Test.MediaFiles
             var track = _approvedDecisions.First();
             track.Item.ExistingFile = true;
             Subject.Import(new List<ImportDecision<LocalBook>> { track }, false);
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.Delete(It.IsAny<BookFile>(), DeleteMediaFileReason.ManualOverride), Times.Once());
+        }
+
+        [Test]
+        public void should_skip_automatic_existing_file_cross_book_relink()
+        {
+            var track = _approvedDecisions.First();
+            track.Item.ExistingFile = true;
+            track.Item.AllowSameFileMatch = false;
+            track.Item.Edition.Id = 10;
+
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(s => s.GetFileWithPath(It.IsAny<string>()))
+                .Returns(Builder<BookFile>.CreateNew()
+                    .With(x => x.Path = track.Item.Path)
+                    .With(x => x.EditionId = 11)
+                    .Build());
+
+            var result = Subject.Import(new List<ImportDecision<LocalBook>> { track }, false, null, ImportMode.Auto);
+
+            result.Should().ContainSingle();
+            result.Single().Result.Should().Be(ImportResultType.Skipped);
+            result.Single().Errors.Should().Contain("Automatic scan skipped: existing file is already linked to another book");
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.Delete(It.IsAny<BookFile>(), DeleteMediaFileReason.ManualOverride), Times.Never());
+
+            ExceptionVerification.ExpectedWarns(1);
+        }
+
+        [Test]
+        public void should_allow_existing_file_cross_book_relink_for_same_file_override()
+        {
+            var track = _approvedDecisions.First();
+            track.Item.ExistingFile = true;
+            track.Item.AllowSameFileMatch = true;
+            track.Item.Edition.Id = 10;
+
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(s => s.GetFileWithPath(It.IsAny<string>()))
+                .Returns(Builder<BookFile>.CreateNew()
+                    .With(x => x.Path = track.Item.Path)
+                    .With(x => x.EditionId = 11)
+                    .Build());
+
+            Subject.Import(new List<ImportDecision<LocalBook>> { track }, false, null, ImportMode.Auto);
 
             Mocker.GetMock<IMediaFileService>()
                 .Verify(v => v.Delete(It.IsAny<BookFile>(), DeleteMediaFileReason.ManualOverride), Times.Once());

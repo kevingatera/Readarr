@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using NLog;
+using NzbDrone.Common;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Instrumentation.Extensions;
@@ -125,19 +126,57 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                     continue;
                 }
 
+                // Every decision in the group must resolve to an edition owned by this book before any
+                // monitored state or files change, including persisted editions that were never swapped.
+                if (decisionList.Any(d => d.Item.Edition == null || d.Item.Edition.BookId != book.Id))
+                {
+                    _logger.Warn("Rejecting import for {0}: an import decision references an edition owned by another book", book);
+                    foreach (var decision in decisionList)
+                    {
+                        decision.Reject(new Rejection("Edition belongs to another book", RejectionType.Permanent));
+                    }
+
+                    continue;
+                }
+
                 // if (replaceExisting)
                 // {
                 //     RemoveExistingTrackFiles(author, book);
                 // }
 
-                // Make sure part numbers are populated for audiobooks
-                // If all audio files and all part numbers are zero, set them by filename order
-                if (decisionList.All(b => MediaFileExtensions.AudioExtensions.Contains(Path.GetExtension(b.Item.Path)) && b.Item.Part == 0))
+                // A source file matched through several decisions is imported once, keeping the best candidate.
+                var audioDecisions = new List<ImportDecision<LocalBook>>();
+                var audioCandidates = decisionList.Where(b => MediaFileExtensions.AudioExtensions.Contains(Path.GetExtension(b.Item.Path)));
+
+                foreach (var sourceGroup in audioCandidates.GroupBy(b => b.Item.Path, PathEqualityComparer.Instance))
                 {
-                    var part = 1;
-                    foreach (var d in decisionList.OrderBy(x => PadNumbers.Replace(x.Item.Path)))
+                    var ranked = sourceGroup
+                        .OrderByDescending(d => d.Item.Quality, new QualityModelComparer(sourceGroup.First().Item.Author.QualityProfile))
+                        .ThenByDescending(d => d.Item.Size)
+                        .ToList();
+
+                    audioDecisions.Add(ranked[0]);
+
+                    foreach (var duplicate in ranked.Skip(1))
                     {
-                        d.Item.Part = part++;
+                        duplicate.Reject(new Rejection("Duplicate source file in this import", RejectionType.Permanent));
+                    }
+                }
+
+                // Multi-file audiobooks need unique part numbers for naming. Only missing parts are numbered,
+                // after the highest existing part, so parts that are already set keep their identity.
+                if (audioDecisions.Count > 1)
+                {
+                    var nextPart = Math.Max(0, audioDecisions.Max(x => x.Item.Part)) + 1;
+
+                    foreach (var d in audioDecisions.Where(x => x.Item.Part <= 0).OrderBy(x => PadNumbers.Replace(x.Item.Path)))
+                    {
+                        d.Item.Part = nextPart++;
+                    }
+
+                    foreach (var d in audioDecisions)
+                    {
+                        d.Item.PartCount = audioDecisions.Count;
                     }
                 }
 
@@ -191,7 +230,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                         DateAdded = DateTime.UtcNow,
                         ReleaseGroup = localTrack.ReleaseGroup,
                         Quality = localTrack.Quality,
-                        MediaInfo = localTrack.FileTrackInfo.MediaInfo,
+                        MediaInfo = localTrack.FileTrackInfo?.MediaInfo,
                         EditionId = localTrack.Edition.Id,
                         Author = localTrack.Author,
                         Edition = localTrack.Edition
@@ -242,6 +281,13 @@ namespace NzbDrone.Core.MediaFiles.BookImport
 
                         if (previousFile != null)
                         {
+                            if (ShouldSkipAutomaticCrossBookRelink(localTrack, previousFile, bookFile, replaceExisting, downloadClientItem, importMode))
+                            {
+                                _logger.Warn("Skipping automatic cross-book relink for existing file {0}. Existing edition: {1}, attempted edition: {2}", bookFile.Path, previousFile.EditionId, bookFile.EditionId);
+                                importResults.Add(new ImportResult(importDecision, "Automatic scan skipped: existing file is already linked to another book"));
+                                continue;
+                            }
+
                             _mediaFileService.Delete(previousFile, DeleteMediaFileReason.ManualOverride);
 
                             if (bookFile.CalibreId == 0 && previousFile.CalibreId != 0)
@@ -309,7 +355,11 @@ namespace NzbDrone.Core.MediaFiles.BookImport
 
             var watch = new System.Diagnostics.Stopwatch();
             watch.Start();
-            _mediaFileService.AddMany(filesToAdd);
+            if (filesToAdd.Any())
+            {
+                _mediaFileService.AddMany(filesToAdd);
+            }
+
             _logger.Debug("Inserted new trackfiles in {0}ms", watch.ElapsedMilliseconds);
 
             // now that trackfiles have been inserted and ids generated, publish the import events
@@ -324,8 +374,16 @@ namespace NzbDrone.Core.MediaFiles.BookImport
             foreach (var bookImport in bookImports)
             {
                 var book = bookImport.First().ImportDecision.Item.Book;
-                var edition = book.Editions.Value.Single(x => x.Monitored);
                 var author = bookImport.First().ImportDecision.Item.Author;
+                var monitoredEditions = book.Editions?.Value?.Where(x => x.Monitored).ToList() ?? new List<Edition>();
+
+                if (monitoredEditions.Count != 1)
+                {
+                    _logger.Warn("Unable to publish book imported event for {0}: expected one monitored edition, found {1}", book, monitoredEditions.Count);
+                    continue;
+                }
+
+                var edition = monitoredEditions[0];
 
                 if (bookImport.Where(e => e.Errors.Count == 0).ToList().Count > 0 && author != null && book != null)
                 {
@@ -492,6 +550,35 @@ namespace NzbDrone.Core.MediaFiles.BookImport
             var book = decisions.First().Item.Book;
             var edition = decisions.First().Item.Edition;
 
+            if (edition == null)
+            {
+                var foreignEditionId = book?.ForeignEditionId;
+
+                if (!foreignEditionId.IsNullOrWhiteSpace())
+                {
+                    edition = _editionService.GetEditionByForeignEditionId(foreignEditionId);
+
+                    if (edition == null)
+                    {
+                        edition = book?.Editions?.Value?.SingleOrDefault(x => x.ForeignEditionId == foreignEditionId);
+                    }
+                }
+
+                edition ??= book?.Editions?.Value?.SingleOrDefault(x => x.Monitored) ?? book?.Editions?.Value?.FirstOrDefault();
+
+                if (edition == null)
+                {
+                    _logger.Warn("Unable to resolve import edition for book {0}", book);
+                    RejectBook(decisions);
+                    return null;
+                }
+
+                foreach (var decision in decisions)
+                {
+                    decision.Item.Edition = edition;
+                }
+            }
+
             if (edition.Id == 0)
             {
                 var dbEdition = _editionService.GetEditionByForeignEditionId(edition.ForeignEditionId);
@@ -515,15 +602,22 @@ namespace NzbDrone.Core.MediaFiles.BookImport
 
                         return null;
                     }
-
-                    // Populate the new DB book
-                    foreach (var decision in decisions)
-                    {
-                        decision.Item.Edition = dbEdition;
-                    }
-
-                    edition = dbEdition;
                 }
+
+                if (dbEdition == null || dbEdition.BookId != book.Id)
+                {
+                    _logger.Warn("Unable to bind import edition {0} to book {1}", edition.ForeignEditionId, book);
+                    RejectBook(decisions);
+                    return null;
+                }
+
+                // Always swap the transient import edition for the persisted row before continuing.
+                foreach (var decision in decisions)
+                {
+                    decision.Item.Edition = dbEdition;
+                }
+
+                edition = dbEdition;
             }
 
             return edition;
@@ -572,6 +666,27 @@ namespace NzbDrone.Core.MediaFiles.BookImport
             }
 
             return null;
+        }
+
+        private static bool ShouldSkipAutomaticCrossBookRelink(LocalBook localTrack, BookFile previousFile, BookFile candidateFile, bool replaceExisting, DownloadClientItem downloadClientItem, ImportMode importMode)
+        {
+            if (previousFile == null || candidateFile == null || localTrack == null)
+            {
+                return false;
+            }
+
+            if (previousFile.EditionId == 0 || candidateFile.EditionId == 0 || previousFile.EditionId == candidateFile.EditionId)
+            {
+                return false;
+            }
+
+            // Automatic library scans should never silently steal an existing path from another book.
+            // Manual/same-file override paths can still reassign explicitly.
+            return localTrack.ExistingFile &&
+                   !localTrack.AllowSameFileMatch &&
+                   downloadClientItem == null &&
+                   importMode == ImportMode.Auto &&
+                   !replaceExisting;
         }
     }
 }

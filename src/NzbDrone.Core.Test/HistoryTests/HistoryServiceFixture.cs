@@ -70,5 +70,117 @@ namespace NzbDrone.Core.Test.HistoryTests
             Mocker.GetMock<IHistoryRepository>()
                 .Verify(v => v.Insert(It.Is<EntityHistory>(h => h.SourceTitle == Path.GetFileNameWithoutExtension(localTrack.Path))));
         }
+
+        [Test]
+        public void should_record_history_for_existing_file_imports()
+        {
+            var author = Builder<Author>.CreateNew().With(x => x.Id = 44).Build();
+            var book = Builder<Book>.CreateNew().With(x => x.Id = 55).Build();
+            var trackFile = Builder<BookFile>.CreateNew()
+                .With(x => x.Id = 66)
+                .With(x => x.Path = @"C:\Test\Books\Author - Book.m4b")
+                .With(f => f.Author = author)
+                .Build();
+
+            var localTrack = new LocalBook
+            {
+                Author = author,
+                Book = book,
+                Path = @"C:\Test\Unsorted\Author - Book.m4b",
+                Size = 1234,
+                Quality = new QualityModel(Quality.M4B)
+            };
+
+            Subject.Handle(new TrackImportedEvent(localTrack, trackFile, new List<BookFile>(), false, null));
+
+            Mocker.GetMock<IHistoryRepository>()
+                .Verify(v => v.Insert(It.Is<EntityHistory>(h =>
+                    h.EventType == EntityHistoryEventType.BookFileImported &&
+                    h.AuthorId == author.Id &&
+                    h.BookId == book.Id &&
+                    h.Data["DroppedPath"] == localTrack.Path &&
+                    h.Data["ImportedPath"] == trackFile.Path)), Times.Once());
+        }
+
+        [Test]
+        public void should_not_borrow_a_grab_download_id_when_a_scan_imports_the_file()
+        {
+            var author = Builder<Author>.CreateNew().With(x => x.Id = 44).Build();
+            var book = Builder<Book>.CreateNew().With(x => x.Id = 55).Build();
+            var trackFile = Builder<BookFile>.CreateNew()
+                .With(x => x.Id = 66)
+                .With(x => x.Path = @"C:\Test\Books\Author - Book.m4b")
+                .With(f => f.Author = author)
+                .Build();
+
+            var localTrack = new LocalBook
+            {
+                Author = author,
+                Book = book,
+                Path = @"C:\Test\Unsorted\Author - Book.m4b",
+                Size = 1234,
+                Quality = new QualityModel(Quality.M4B)
+            };
+
+            // A grab for the same book and quality is outstanding, but this scan has no download provenance.
+            Mocker.GetMock<IHistoryRepository>()
+                .Setup(x => x.FindDownloadHistory(44, It.IsAny<QualityModel>()))
+                .Returns(new List<EntityHistory>
+                {
+                    new EntityHistory
+                    {
+                        EventType = EntityHistoryEventType.Grabbed,
+                        BookId = 55,
+                        DownloadId = "grab-download"
+                    }
+                });
+
+            Subject.Handle(new TrackImportedEvent(localTrack, trackFile, new List<BookFile>(), false, null));
+
+            Mocker.GetMock<IHistoryRepository>()
+                .Verify(v => v.Insert(It.Is<EntityHistory>(h =>
+                    h.EventType == EntityHistoryEventType.BookFileImported &&
+                    h.DownloadId == null)), Times.Once());
+        }
+
+        [Test]
+        public void should_infer_the_grab_download_id_for_a_tracked_import()
+        {
+            var author = Builder<Author>.CreateNew().With(x => x.Id = 44).Build();
+            var book = Builder<Book>.CreateNew().With(x => x.Id = 55).Build();
+            var trackFile = Builder<BookFile>.CreateNew()
+                .With(x => x.Id = 66)
+                .With(x => x.Path = @"C:\Test\Books\Author - Book.m4b")
+                .With(f => f.Author = author)
+                .Build();
+
+            var localTrack = new LocalBook
+            {
+                Author = author,
+                Book = book,
+                Path = @"C:\Test\Unsorted\Author - Book.m4b",
+                Size = 1234,
+                Quality = new QualityModel(Quality.M4B)
+            };
+
+            Mocker.GetMock<IHistoryRepository>()
+                .Setup(x => x.FindDownloadHistory(44, It.IsAny<QualityModel>()))
+                .Returns(new List<EntityHistory>
+                {
+                    new EntityHistory
+                    {
+                        EventType = EntityHistoryEventType.Grabbed,
+                        BookId = 55,
+                        DownloadId = "grab-download"
+                    }
+                });
+
+            Subject.Handle(new TrackImportedEvent(localTrack, trackFile, new List<BookFile>(), true, null));
+
+            Mocker.GetMock<IHistoryRepository>()
+                .Verify(v => v.Insert(It.Is<EntityHistory>(h =>
+                    h.EventType == EntityHistoryEventType.BookFileImported &&
+                    h.DownloadId == "grab-download")), Times.Once());
+        }
     }
 }
