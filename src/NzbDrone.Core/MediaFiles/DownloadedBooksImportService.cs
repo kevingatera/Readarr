@@ -220,12 +220,13 @@ namespace NzbDrone.Core.MediaFiles
             {
                 Author = author
             };
-            ApplyGrabHistoryOverride(idOverrides, downloadClientItem, author, new[] { directoryInfo.Name });
+            var historyBookInfo = ApplyGrabHistoryOverride(idOverrides, downloadClientItem, author, new[] { directoryInfo.Name });
 
             var idInfo = new ImportDecisionMakerInfo
             {
                 DownloadClientItem = downloadClientItem,
-                ParsedBookInfo = folderInfo
+                ParsedBookInfo = folderInfo,
+                HistoryBookInfo = historyBookInfo
             };
             var idConfig = new ImportDecisionMakerConfig
             {
@@ -307,11 +308,12 @@ namespace NzbDrone.Core.MediaFiles
             {
                 Author = author
             };
-            ApplyGrabHistoryOverride(idOverrides, downloadClientItem, author, new[] { Path.GetFileNameWithoutExtension(fileInfo.Name) });
+            var historyBookInfo = ApplyGrabHistoryOverride(idOverrides, downloadClientItem, author, new[] { Path.GetFileNameWithoutExtension(fileInfo.Name) });
 
             var idInfo = new ImportDecisionMakerInfo
             {
-                DownloadClientItem = downloadClientItem
+                DownloadClientItem = downloadClientItem,
+                HistoryBookInfo = historyBookInfo
             };
             var idConfig = new ImportDecisionMakerConfig
             {
@@ -329,21 +331,26 @@ namespace NzbDrone.Core.MediaFiles
 
         // Applies the book from the latest grab only when the grab names exactly one book and
         // the current download title and file name agree with it. Anything else falls back to identification.
-        private void ApplyGrabHistoryOverride(IdentificationOverrides idOverrides, DownloadClientItem downloadClientItem, Author author, IEnumerable<string> fileNames)
+        // Returns the parsed grab title, which identification uses as evidence for the release the grab was made for.
+        private ParsedBookInfo ApplyGrabHistoryOverride(IdentificationOverrides idOverrides, DownloadClientItem downloadClientItem, Author author, IEnumerable<string> fileNames)
         {
-            var historyBook = GetGrabHistoryBook(downloadClientItem, author, fileNames);
+            var historyBook = GetGrabHistoryBook(downloadClientItem, author, fileNames, out var grabbedInfo);
 
             if (historyBook == null)
             {
-                return;
+                return null;
             }
 
             idOverrides.Book = historyBook;
             idOverrides.Author = author ?? historyBook.Author?.Value;
+
+            return grabbedInfo;
         }
 
-        private Book GetGrabHistoryBook(DownloadClientItem downloadClientItem, Author author, IEnumerable<string> fileNames)
+        private Book GetGrabHistoryBook(DownloadClientItem downloadClientItem, Author author, IEnumerable<string> fileNames, out ParsedBookInfo grabbedInfo)
         {
+            grabbedInfo = null;
+
             if (downloadClientItem == null || downloadClientItem.DownloadId.IsNullOrWhiteSpace())
             {
                 return null;
@@ -351,7 +358,9 @@ namespace NzbDrone.Core.MediaFiles
 
             var grabbedHistory = _historyService.Find(downloadClientItem.DownloadId, EntityHistoryEventType.Grabbed) ?? new List<EntityHistory>();
 
-            var grabbedBookIds = GrabCohort.Latest(grabbedHistory)
+            var latestGrab = GrabCohort.Latest(grabbedHistory);
+
+            var grabbedBookIds = latestGrab
                 .Select(h => h.BookId)
                 .Where(id => id > 0)
                 .Distinct()
@@ -361,6 +370,8 @@ namespace NzbDrone.Core.MediaFiles
             {
                 return null;
             }
+
+            var grabbedRow = latestGrab.First(h => h.BookId == grabbedBookIds[0]);
 
             Book historyBook;
 
@@ -384,6 +395,8 @@ namespace NzbDrone.Core.MediaFiles
                 _logger.Debug("Skipping grab history book override for downloadId={0}; current titles do not match '{1}'", downloadClientItem.DownloadId, historyBook.Title);
                 return null;
             }
+
+            grabbedInfo = Parser.Parser.ParseBookTitle(grabbedRow.SourceTitle);
 
             return historyBook;
         }

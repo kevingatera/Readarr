@@ -103,7 +103,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 }
                 else
                 {
-                    author ??= trackedDownload.RemoteBook?.Author;
+                    author ??= TrackedDownloadAuthorResolver.Resolve(trackedDownload, _authorService.GetAuthorByMetadataId);
 
                     if (trackedDownload.ImportItem == null)
                     {
@@ -122,7 +122,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 }
 
                 var files = new List<IFileInfo> { _diskProvider.GetFileInfo(path) };
-                author ??= trackedDownload?.RemoteBook?.Author ?? _parsingService.GetAuthor(Path.GetFileNameWithoutExtension(path));
+                author ??= TrackedDownloadAuthorResolver.Resolve(trackedDownload, _authorService.GetAuthorByMetadataId) ?? _parsingService.GetAuthor(Path.GetFileNameWithoutExtension(path));
 
                 var itemInfo = new ImportDecisionMakerInfo
                 {

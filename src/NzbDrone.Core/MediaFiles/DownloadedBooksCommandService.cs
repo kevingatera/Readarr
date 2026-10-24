@@ -5,6 +5,7 @@ using NLog;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Instrumentation.Extensions;
+using NzbDrone.Core.Books;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.MediaFiles.BookImport;
@@ -17,6 +18,7 @@ namespace NzbDrone.Core.MediaFiles
     {
         private readonly IDownloadedBooksImportService _downloadedTracksImportService;
         private readonly ITrackedDownloadService _trackedDownloadService;
+        private readonly IAuthorService _authorService;
         private readonly IDiskProvider _diskProvider;
         private readonly ICompletedDownloadService _completedDownloadService;
         private readonly ICommandResultReporter _commandResultReporter;
@@ -24,6 +26,7 @@ namespace NzbDrone.Core.MediaFiles
 
         public DownloadedBooksCommandService(IDownloadedBooksImportService downloadedTracksImportService,
                                                 ITrackedDownloadService trackedDownloadService,
+                                                IAuthorService authorService,
                                                 IDiskProvider diskProvider,
                                                 ICompletedDownloadService completedDownloadService,
                                                 ICommandResultReporter commandResultReporter,
@@ -31,6 +34,7 @@ namespace NzbDrone.Core.MediaFiles
         {
             _downloadedTracksImportService = downloadedTracksImportService;
             _trackedDownloadService = trackedDownloadService;
+            _authorService = authorService;
             _diskProvider = diskProvider;
             _completedDownloadService = completedDownloadService;
             _commandResultReporter = commandResultReporter;
@@ -53,7 +57,7 @@ namespace NzbDrone.Core.MediaFiles
                 {
                     _logger.Debug("External directory scan request for known download {0}. [{1}]", message.DownloadClientId, message.Path);
 
-                    var importResults = _downloadedTracksImportService.ProcessPath(message.Path, message.ImportMode, trackedDownload.RemoteBook.Author, trackedDownload.DownloadItem);
+                    var importResults = _downloadedTracksImportService.ProcessPath(message.Path, message.ImportMode, TrackedDownloadAuthorResolver.Resolve(trackedDownload, _authorService.GetAuthorByMetadataId), trackedDownload.DownloadItem);
 
                     _completedDownloadService.VerifyImport(trackedDownload, importResults);
 
