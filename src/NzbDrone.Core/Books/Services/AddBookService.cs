@@ -44,6 +44,7 @@ namespace NzbDrone.Core.Books
         {
             _logger.Debug($"Adding book {book}");
 
+            book.AddOptions ??= new AddBookOptions();
             book = AddSkyhookData(book);
 
             // we allow adding extra editions, so check if the book already exists
@@ -74,6 +75,7 @@ namespace NzbDrone.Core.Books
 
             book.Author = dbAuthor;
             book.AuthorMetadataId = dbAuthor.AuthorMetadataId;
+
             _bookService.AddBook(book, doRefresh);
 
             return book;
@@ -103,7 +105,16 @@ namespace NzbDrone.Core.Books
 
         private Book AddSkyhookData(Book newBook)
         {
-            var editionId = newBook.Editions.Value.Single(x => x.Monitored).ForeignEditionId;
+            var editionId = newBook.Editions?.Value?.SingleOrDefault(x => x.Monitored)?.ForeignEditionId
+                            ?? newBook.ForeignEditionId;
+
+            if (string.IsNullOrWhiteSpace(editionId))
+            {
+                throw new ValidationException(new List<ValidationFailure>
+                                              {
+                                                  new ValidationFailure("ForeignEditionId", "A monitored edition is required", newBook.ForeignBookId)
+                                              });
+            }
 
             Tuple<string, Book, List<AuthorMetadata>> tuple = null;
             try
@@ -123,9 +134,24 @@ namespace NzbDrone.Core.Books
             newBook.UseMetadataFrom(tuple.Item2);
             newBook.Added = DateTime.UtcNow;
 
-            newBook.Editions = tuple.Item2.Editions.Value;
+            newBook.Editions = tuple.Item2.Editions?.Value ?? new List<Edition>();
             newBook.Editions.Value.ForEach(x => x.Monitored = false);
-            newBook.Editions.Value.Single(x => x.ForeignEditionId == editionId).Monitored = true;
+
+            var matchingEditions = newBook.Editions.Value
+                .Where(x => x.ForeignEditionId == editionId)
+                .ToList();
+
+            if (matchingEditions.Count != 1)
+            {
+                _logger.Warn("Unable to add book {0}: requested edition {1} was not uniquely present in refreshed metadata", newBook.ForeignBookId, editionId);
+
+                throw new ValidationException(new List<ValidationFailure>
+                                              {
+                                                  new ValidationFailure("ForeignEditionId", "The requested edition was not present exactly once in the latest metadata. Refresh the lookup and select the edition again.", editionId)
+                                              });
+            }
+
+            matchingEditions[0].Monitored = true;
 
             var metadata = tuple.Item3.FirstOrDefault(x => x.ForeignAuthorId == tuple.Item1);
             newBook.AuthorMetadata = metadata;
