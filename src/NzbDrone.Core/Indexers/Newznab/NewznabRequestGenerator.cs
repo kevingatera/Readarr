@@ -1,14 +1,18 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Http;
 using NzbDrone.Core.IndexerSearch.Definitions;
+using NzbDrone.Core.Parser;
 
 namespace NzbDrone.Core.Indexers.Newznab
 {
     public class NewznabRequestGenerator : IIndexerRequestGenerator
     {
+        private static readonly Regex TrailingBracketedTitlePart = new Regex(@"\s*(?:\[[^\]]+\]|\([^)]*\))\s*$", RegexOptions.Compiled);
+
         protected readonly INewznabCapabilitiesProvider _capabilitiesProvider;
         public int MaxPages { get; set; }
         public int PageSize { get; set; }
@@ -56,6 +60,7 @@ namespace NzbDrone.Core.Indexers.Newznab
         public virtual IndexerPageableRequestChain GetSearchRequests(BookSearchCriteria searchCriteria)
         {
             var pageableRequests = new IndexerPageableRequestChain();
+            var fallbackBookQuery = GetFallbackBookQuery(searchCriteria);
 
             if (SupportsBookSearch)
             {
@@ -66,6 +71,17 @@ namespace NzbDrone.Core.Indexers.Newznab
                 AddBookPageableRequests(pageableRequests,
                     searchCriteria,
                     $"&title={NewsnabifyTitle(searchCriteria.BookQuery)}");
+
+                if (fallbackBookQuery.IsNotNullOrWhiteSpace())
+                {
+                    AddBookPageableRequests(pageableRequests,
+                        searchCriteria,
+                        $"&author={NewsnabifyTitle(searchCriteria.AuthorQuery)}&title={NewsnabifyTitle(fallbackBookQuery)}");
+
+                    AddBookPageableRequests(pageableRequests,
+                        searchCriteria,
+                        $"&title={NewsnabifyTitle(fallbackBookQuery)}");
+                }
             }
 
             if (SupportsSearch)
@@ -88,6 +104,28 @@ namespace NzbDrone.Core.Indexers.Newznab
                     Settings.Categories,
                     "search",
                     $"&q={NewsnabifyTitle(searchCriteria.BookQuery)}"));
+
+                if (fallbackBookQuery.IsNotNullOrWhiteSpace())
+                {
+                    pageableRequests.AddTier();
+
+                    pageableRequests.Add(GetPagedRequests(MaxPages,
+                        Settings.Categories,
+                        "search",
+                        $"&q={NewsnabifyTitle(fallbackBookQuery)}+{NewsnabifyTitle(searchCriteria.AuthorQuery)}"));
+
+                    pageableRequests.Add(GetPagedRequests(MaxPages,
+                        Settings.Categories,
+                        "search",
+                        $"&q={NewsnabifyTitle(searchCriteria.AuthorQuery)}+{NewsnabifyTitle(fallbackBookQuery)}"));
+
+                    pageableRequests.AddTier();
+
+                    pageableRequests.Add(GetPagedRequests(MaxPages,
+                        Settings.Categories,
+                        "search",
+                        $"&q={NewsnabifyTitle(fallbackBookQuery)}"));
+                }
             }
 
             return pageableRequests;
@@ -159,6 +197,39 @@ namespace NzbDrone.Core.Indexers.Newznab
         {
             title = title.Replace("+", " ");
             return Uri.EscapeDataString(title);
+        }
+
+        private static string GetFallbackBookQuery(BookSearchCriteria searchCriteria)
+        {
+            if (searchCriteria?.BookTitle.IsNullOrWhiteSpace() ?? true)
+            {
+                return null;
+            }
+
+            var stripped = searchCriteria.BookTitle;
+
+            while (true)
+            {
+                var updated = TrailingBracketedTitlePart.Replace(stripped, string.Empty).Trim();
+
+                if (updated == stripped)
+                {
+                    break;
+                }
+
+                stripped = updated;
+            }
+
+            if (stripped.IsNullOrWhiteSpace() || stripped.Equals(searchCriteria.BookTitle, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            var authorName = searchCriteria.Author?.Name ?? string.Empty;
+            var splitTitle = stripped.SplitBookTitle(authorName).Item1;
+            var fallbackQuery = SearchCriteriaBase.GetQueryTitle(splitTitle);
+
+            return fallbackQuery.Equals(searchCriteria.BookQuery, StringComparison.OrdinalIgnoreCase) ? null : fallbackQuery;
         }
     }
 }
