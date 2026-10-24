@@ -90,6 +90,13 @@ namespace NzbDrone.Core.Books
         protected abstract List<TChild> GetLocalChildren(TEntity entity, List<TChild> remoteChildren);
         protected abstract Tuple<TChild, List<TChild>> GetMatchingExistingChildren(List<TChild> existingChildren, TChild remote);
 
+        // A local child the remote list omits is deleted only when this returns true.
+        // Override to keep children whose absence the source has not confirmed.
+        protected virtual bool CanRemoveChild(TChild local)
+        {
+            return true;
+        }
+
         protected abstract void PrepareNewChild(TChild child, TEntity entity);
         protected abstract void PrepareExistingChild(TChild local, TChild remote, TEntity entity);
 
@@ -268,6 +275,8 @@ namespace NzbDrone.Core.Books
                     }
                 }
             }
+
+            sortedChildren.Deleted.RemoveAll(x => !CanRemoveChild(x));
 
             if (typeof(TChild) != typeof(object))
             {
