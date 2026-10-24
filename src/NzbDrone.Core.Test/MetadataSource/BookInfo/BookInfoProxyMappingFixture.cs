@@ -364,9 +364,197 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
                     "{\"ForeignId\":1,\"Name\":\"Eric Flint\",\"Works\":[{\"ForeignId\":11,\"Title\":\"Other\"}],\"Series\":[]}"));
 
             var method = typeof(BookInfoProxy).GetMethod("PollBook", BindingFlags.NonPublic | BindingFlags.Instance);
-            var thrown = Assert.Throws<TargetInvocationException>(() => method.Invoke(Subject, new object[] { "10" }));
+            var thrown = Assert.Throws<TargetInvocationException>(() => method.Invoke(Subject, new object[] { "10", false }));
 
             thrown.InnerException.Should().BeOfType<BookInfoException>();
+        }
+
+        [Test]
+        public void should_map_series_links_when_link_uses_edition_id()
+        {
+            var authorResource = new AuthorResource
+            {
+                ForeignId = 14168090,
+                Name = "Jason Anspach",
+                Works = new List<WorkResource>
+                {
+                    new WorkResource
+                    {
+                        ForeignId = 284588635,
+                        Title = "Fracture",
+                        Authors = new List<AuthorResource>
+                        {
+                            new AuthorResource { ForeignId = 14168090, Name = "Jason Anspach" }
+                        },
+                        Books = new List<BookResource>
+                        {
+                            new BookResource
+                            {
+                                ForeignId = 249509643,
+                                Title = "Fracture",
+                                Contributors = new List<ContributorResource>
+                                {
+                                    new ContributorResource { ForeignId = 14168090, Role = "Author" }
+                                }
+                            }
+                        }
+                    }
+                },
+                Series = new List<SeriesResource>
+                {
+                    new SeriesResource
+                    {
+                        ForeignId = 213397,
+                        Title = "Galaxy's Edge",
+                        LinkItems = new List<SeriesWorkLinkResource>
+                        {
+                            new SeriesWorkLinkResource
+                            {
+                                ForeignWorkId = 249509643,
+                                PositionInSeries = "25",
+                                SeriesPosition = 0,
+                                Primary = true
+                            }
+                        }
+                    }
+                }
+            };
+
+            var author = InvokePrivateStatic<Author>("MapAuthor", authorResource);
+
+            author.Books.Value.Should().HaveCount(1);
+            author.Books.Value[0].ForeignBookId.Should().Be("284588635");
+            author.Books.Value[0].SeriesLinks.Value.Should().HaveCount(1);
+            author.Books.Value[0].SeriesLinks.Value[0].Position.Should().Be("25");
+            author.Books.Value[0].SeriesLinks.Value[0].Series.Value.ForeignSeriesId.Should().Be("213397");
+        }
+
+        [Test]
+        public void should_find_missing_series_work_ids_not_present_in_author_works()
+        {
+            var authorResource = new AuthorResource
+            {
+                ForeignId = 1,
+                Name = "Author",
+                Works = new List<WorkResource>
+                {
+                    new WorkResource { ForeignId = 10, Title = "Known Work" }
+                },
+                Series = new List<SeriesResource>
+                {
+                    new SeriesResource
+                    {
+                        ForeignId = 50,
+                        Title = "Series",
+                        LinkItems = new List<SeriesWorkLinkResource>
+                        {
+                            new SeriesWorkLinkResource { ForeignWorkId = 10, PositionInSeries = "1", SeriesPosition = 1, Primary = true },
+                            new SeriesWorkLinkResource { ForeignWorkId = 20, PositionInSeries = "2", SeriesPosition = 2, Primary = true },
+                            new SeriesWorkLinkResource { ForeignWorkId = 0, PositionInSeries = "x", SeriesPosition = 0, Primary = false }
+                        }
+                    }
+                }
+            };
+
+            var missing = InvokePrivateStatic<List<int>>("GetMissingSeriesWorkIds", authorResource);
+
+            missing.Should().BeEquivalentTo(new[] { 20 });
+        }
+
+        [Test]
+        public void should_merge_only_series_supplemental_works_for_the_same_author()
+        {
+            var authorResource = new AuthorResource
+            {
+                ForeignId = 1,
+                Name = "Author",
+                Works = new List<WorkResource>
+                {
+                    new WorkResource
+                    {
+                        ForeignId = 10,
+                        Title = "Known Work",
+                        Authors = new List<AuthorResource>
+                        {
+                            new AuthorResource { ForeignId = 1, Name = "Author" }
+                        }
+                    }
+                },
+                Series = new List<SeriesResource>()
+            };
+
+            var supplemental = new List<WorkResource>
+            {
+                new WorkResource
+                {
+                    ForeignId = 20,
+                    Title = "Series Missing Work",
+                    Authors = new List<AuthorResource>
+                    {
+                        new AuthorResource { ForeignId = 1, Name = "Author" }
+                    }
+                },
+                new WorkResource
+                {
+                    ForeignId = 30,
+                    Title = "Other Author Work",
+                    Authors = new List<AuthorResource>
+                    {
+                        new AuthorResource { ForeignId = 2, Name = "Someone Else" }
+                    }
+                }
+            };
+
+            InvokePrivateStatic<object>("MergeSeriesSupplementalWorks", authorResource, supplemental, 1);
+
+            authorResource.Works.Should().HaveCount(2);
+            authorResource.Works.Should().Contain(x => x.ForeignId == 10);
+            authorResource.Works.Should().Contain(x => x.ForeignId == 20);
+            authorResource.Works.Should().NotContain(x => x.ForeignId == 30);
+        }
+
+        [Test]
+        public void should_not_attach_series_link_whose_id_names_two_books()
+        {
+            var resource = new AuthorResource
+            {
+                ForeignId = 1,
+                Name = "Author",
+                Works = new List<WorkResource>
+                {
+                    new WorkResource
+                    {
+                        ForeignId = 100,
+                        Title = "Work A",
+                        Authors = new List<AuthorResource> { new AuthorResource { ForeignId = 1, Name = "Author" } },
+                        Books = new List<BookResource> { new BookResource { ForeignId = 200, Title = "Work A" } }
+                    },
+                    new WorkResource
+                    {
+                        ForeignId = 300,
+                        Title = "Work B",
+                        Authors = new List<AuthorResource> { new AuthorResource { ForeignId = 1, Name = "Author" } },
+                        Books = new List<BookResource> { new BookResource { ForeignId = 100, Title = "Work B" } }
+                    }
+                },
+                Series = new List<SeriesResource>
+                {
+                    new SeriesResource
+                    {
+                        ForeignId = 50,
+                        Title = "Series",
+                        LinkItems = new List<SeriesWorkLinkResource>
+                        {
+                            new SeriesWorkLinkResource { ForeignWorkId = 100, Primary = true }
+                        }
+                    }
+                }
+            };
+
+            var author = InvokePrivateStatic<Author>("MapAuthor", resource);
+
+            author.Books.Value.Should().HaveCount(2);
+            author.Books.Value.Should().OnlyContain(b => b.SeriesLinks.Value.Count == 0);
         }
 
         private static T InvokePrivateStatic<T>(string methodName, params object[] args)

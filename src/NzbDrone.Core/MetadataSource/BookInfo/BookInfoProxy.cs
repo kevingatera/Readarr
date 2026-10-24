@@ -25,6 +25,10 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
 {
     public class BookInfoProxy : IProvideAuthorInfo, IProvideBookInfo, ISearchForNewBook, ISearchForNewAuthor, ISearchForNewEntity
     {
+        // Bounds the extra work one author refresh can cause through series backfill.
+        private const int MaxSeriesBackfillRequests = 20;
+        private static readonly TimeSpan MaxSeriesBackfillDuration = TimeSpan.FromSeconds(30);
+
         private static readonly JsonSerializerOptions SerializerSettings = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = false,
@@ -99,7 +103,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                     return PollAuthor(foreignAuthorId);
                 }
 
-                return PollAuthorUncached(foreignAuthorId);
+                return PollAuthorUncached(foreignAuthorId, true);
             }
             catch (BookInfoException e)
             {
@@ -135,6 +139,12 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         {
             var books = SearchForNewBook(title, null, false);
 
+            if (!books.Any())
+            {
+                _logger.Debug("No fast add-search results for '{0}', retrying with full edition search", title);
+                books = SearchForNewBook(title, null, true);
+            }
+
             var result = new List<object>();
             foreach (var book in books)
             {
@@ -161,7 +171,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 .ToList();
         }
 
-        public List<Book> SearchForNewBook(string title, string author, bool getAllEditions = true)
+        public virtual List<Book> SearchForNewBook(string title, string author, bool getAllEditions = true)
         {
             var q = title.ToLower().Trim();
             if (author != null)
@@ -235,6 +245,12 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         public List<Book> SearchByAsin(string asin)
         {
             return Search(asin, true);
+        }
+
+        // Virtual so tests can record back-off waits instead of sleeping.
+        protected virtual void Pause(TimeSpan duration)
+        {
+            Thread.Sleep(duration);
         }
 
         private List<Book> Search(string query, bool getAllEditions)
@@ -314,7 +330,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             try
             {
                 var authorId = id.ToString();
-                var result = GetAuthorInfo(authorId);
+                var result = PollAuthorForSearch(authorId);
                 var books = result.Books.Value;
                 var authors = new Dictionary<string, AuthorMetadata> { { authorId, result.Metadata.Value } };
 
@@ -340,7 +356,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         {
             try
             {
-                var tuple = GetBookInfo(id.ToString());
+                var tuple = PollBook(id.ToString(), true);
                 AddDbIds(tuple.Item1, tuple.Item2, tuple.Item3.ToDictionary(x => x.ForeignAuthorId));
                 return new List<Book> { tuple.Item2 };
             }
@@ -428,14 +444,14 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
 
             if (type == "author")
             {
-                var author = PollAuthor(newId);
+                var author = PollAuthorForSearch(newId);
 
                 book = author.Books.Value.FirstOrDefault(b => b.Editions.Value.Any(e => e.ForeignEditionId == id.ToString()));
                 authors = new List<AuthorMetadata> { author.Metadata.Value };
             }
             else if (type == "work")
             {
-                var tuple = PollBook(newId);
+                var tuple = PollBook(newId, true);
 
                 book = tuple.Item2;
                 authors = tuple.Item3;
@@ -600,8 +616,20 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
 
         private Author PollAuthor(string foreignAuthorId)
         {
-            return _authorCache.GetOrAdd(foreignAuthorId,
-                () => PollAuthorUncached(foreignAuthorId),
+            return GetCachedAuthor(foreignAuthorId, () => PollAuthorUncached(foreignAuthorId, true));
+        }
+
+        private Author PollAuthorForSearch(string foreignAuthorId)
+        {
+            // Add-search needs only the works on the author resource, so it skips the series
+            // backfill. Its own cache key keeps a search result from standing in for a refresh.
+            return GetCachedAuthor("search:" + foreignAuthorId, () => PollAuthorUncached(foreignAuthorId, false));
+        }
+
+        private Author GetCachedAuthor(string cacheKey, Func<Author> poll)
+        {
+            return _authorCache.GetOrAdd(cacheKey,
+                () => poll(),
                 new LazyCacheEntryOptions
                 {
                     AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10),
@@ -612,7 +640,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 }.RegisterPostEvictionCallback((key, value, reason, state) => _logger.Debug($"Clearing cache for {key} due to {reason}")));
         }
 
-        private Author PollAuthorUncached(string foreignAuthorId)
+        private Author PollAuthorUncached(string foreignAuthorId, bool backfillSeriesWorks)
         {
             AuthorResource resource = null;
 
@@ -656,6 +684,12 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 {
                     resource.Works ??= new List<WorkResource>();
                     resource.Series ??= new List<SeriesResource>();
+
+                    if (backfillSeriesWorks && int.TryParse(foreignAuthorId, out var parsedAuthorId))
+                    {
+                        BackfillSeriesLinkedWorks(resource, parsedAuthorId);
+                    }
+
                     break;
                 }
 
@@ -671,26 +705,129 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             return MapAuthor(resource);
         }
 
-        private Tuple<string, Book, List<AuthorMetadata>> PollBook(string foreignBookId)
+        private void BackfillSeriesLinkedWorks(AuthorResource authorResource, int authorForeignId)
+        {
+            var missingWorkIds = GetMissingSeriesWorkIds(authorResource);
+
+            if (!missingWorkIds.Any())
+            {
+                return;
+            }
+
+            var supplementalWorks = new List<WorkResource>();
+            var budget = new SeriesBackfillBudget();
+            var started = 0;
+
+            foreach (var workId in missingWorkIds)
+            {
+                if (budget.Exhausted)
+                {
+                    break;
+                }
+
+                started++;
+
+                try
+                {
+                    var workResource = FetchSeriesWork(workId, budget);
+                    if (workResource != null)
+                    {
+                        supplementalWorks.Add(workResource);
+                    }
+                }
+                catch (SeriesBackfillBudgetExhaustedException)
+                {
+                    break;
+                }
+                catch (BookNotFoundException)
+                {
+                    _logger.Debug("Series-linked work {0} for author {1} was not found while backfilling", workId, authorForeignId);
+                }
+                catch (BookInfoException e)
+                {
+                    _logger.Warn(e, "Failed to backfill series-linked work {0} for author {1}", workId, authorForeignId);
+                }
+            }
+
+            if (started < missingWorkIds.Count)
+            {
+                _logger.Debug("Series backfill budget reached for author {0} after {1} HTTP request(s); {2} work(s) left out", authorForeignId, budget.Requests, missingWorkIds.Count - started);
+            }
+
+            var before = authorResource.Works.Count;
+            MergeSeriesSupplementalWorks(authorResource, supplementalWorks, authorForeignId);
+            var added = authorResource.Works.Count - before;
+
+            if (added > 0)
+            {
+                _logger.Debug("Backfilled {0} missing series-linked works for author {1}", added, authorForeignId);
+            }
+        }
+
+        // Returns null when the work cannot be used: a redirect, or a payload for a different work ID.
+        private WorkResource FetchSeriesWork(int workId, SeriesBackfillBudget budget)
+        {
+            var httpResponse = FetchWork(workId.ToString(), 3, budget);
+
+            if (httpResponse.StatusCode == HttpStatusCode.NotFound)
+            {
+                throw new BookNotFoundException(workId.ToString());
+            }
+
+            if (httpResponse.HasHttpRedirect)
+            {
+                _logger.Debug("Skipping series-linked work {0} backfill: metadata source redirected it", workId);
+                return null;
+            }
+
+            if (httpResponse.HasHttpError)
+            {
+                throw new BookInfoException($"Unexpected response fetching series-linked work {workId}");
+            }
+
+            var resource = JsonSerializer.Deserialize<WorkResource>(httpResponse.Content, SerializerSettings);
+
+            return resource?.ForeignId == workId ? resource : null;
+        }
+
+        private HttpResponse FetchWork(string foreignWorkId, int maxAttempts, SeriesBackfillBudget budget = null)
+        {
+            for (var attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                if (budget != null && budget.Exhausted)
+                {
+                    throw new SeriesBackfillBudgetExhaustedException();
+                }
+
+                var httpRequest = _requestBuilder.GetRequestBuilder().Create()
+                    .SetSegment("route", $"work/{foreignWorkId}")
+                    .Build();
+
+                httpRequest.SuppressHttpError = true;
+
+                budget?.Spend();
+
+                // A work request may redirect to an author.
+                var httpResponse = _httpClient.Get(httpRequest);
+
+                if (httpResponse.StatusCode != HttpStatusCode.TooManyRequests)
+                {
+                    return httpResponse;
+                }
+
+                WaitUntilRetry(httpResponse, budget);
+            }
+
+            throw new BookInfoException($"Still rate limited fetching work {foreignWorkId}");
+        }
+
+        private Tuple<string, Book, List<AuthorMetadata>> PollBook(string foreignBookId, bool forSearch = false)
         {
             WorkResource resource = null;
 
             for (var i = 0; i < 60; i++)
             {
-                var httpRequest = _requestBuilder.GetRequestBuilder().Create()
-                    .SetSegment("route", $"work/{foreignBookId}")
-                    .Build();
-
-                httpRequest.SuppressHttpError = true;
-
-                // this may redirect to an author
-                var httpResponse = _httpClient.Get(httpRequest);
-
-                if (httpResponse.StatusCode == HttpStatusCode.TooManyRequests)
-                {
-                    WaitUntilRetry(httpResponse);
-                    continue;
-                }
+                var httpResponse = FetchWork(foreignBookId, 60);
 
                 if (httpResponse.StatusCode == HttpStatusCode.NotFound)
                 {
@@ -706,7 +843,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
 
                     if (type == "author")
                     {
-                        var author = PollAuthor(newId);
+                        var author = forSearch ? PollAuthorForSearch(newId) : PollAuthor(newId);
                         var authorBook = author.Books.Value.SingleOrDefault(x => x.ForeignBookId == foreignBookId);
 
                         if (authorBook == null)
@@ -762,7 +899,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             return Tuple.Create(authorId, book, metadata);
         }
 
-        private void WaitUntilRetry(HttpResponse response)
+        private void WaitUntilRetry(HttpResponse response, SeriesBackfillBudget budget = null)
         {
             var seconds = 5;
 
@@ -776,9 +913,17 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 }
             }
 
-            _logger.Info("BookInfo returned 429, backing off for {0}s", seconds);
+            var wait = TimeSpan.FromSeconds(Math.Max(seconds, 0));
 
-            Thread.Sleep(TimeSpan.FromSeconds(seconds));
+            // A backfill wait may not run past the backfill deadline.
+            if (budget != null && wait > budget.Remaining)
+            {
+                wait = budget.Remaining;
+            }
+
+            _logger.Info("BookInfo returned 429, backing off for {0}s", Math.Round(wait.TotalSeconds, 1));
+
+            Pause(wait);
         }
 
         private static AuthorMetadata MapAuthorMetadata(AuthorResource resource)
@@ -863,6 +1008,17 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         private static void MapSeriesLinks(List<Series> series, List<Book> books, List<SeriesResource> resource)
         {
             var bookDict = books.ToDictionary(x => x.ForeignBookId);
+            var editionBookDict = books
+                .SelectMany(book =>
+                {
+                    var editions = book.Editions?.Value ?? new List<Edition>();
+                    return editions
+                        .Where(edition => edition.ForeignEditionId.IsNotNullOrWhiteSpace())
+                        .Select(edition => new { edition.ForeignEditionId, Book = book });
+                })
+                .GroupBy(x => x.ForeignEditionId)
+                .Where(g => g.Select(x => x.Book.ForeignBookId).Distinct().Count() == 1)
+                .ToDictionary(x => x.Key, x => x.First().Book);
             var seriesDict = series.ToDictionary(x => x.ForeignSeriesId);
 
             foreach (var book in books)
@@ -875,14 +1031,11 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             {
                 if (seriesDict.TryGetValue(s.ForeignId.ToString(), out var curr))
                 {
-                    curr.LinkItems = s.LinkItems.Where(x => x.ForeignWorkId != 0 && bookDict.ContainsKey(x.ForeignWorkId.ToString())).Select(l => new SeriesBookLink
-                    {
-                        Book = bookDict[l.ForeignWorkId.ToString()],
-                        Series = curr,
-                        IsPrimary = l.Primary,
-                        Position = l.PositionInSeries,
-                        SeriesPosition = l.SeriesPosition
-                    }).ToList();
+                    curr.LinkItems = s.LinkItems
+                        .Where(x => x.ForeignWorkId != 0)
+                        .Select(l => ResolveSeriesLink(l, curr, bookDict, editionBookDict))
+                        .Where(x => x != null)
+                        .ToList();
 
                     foreach (var l in curr.LinkItems.Value)
                     {
@@ -890,6 +1043,36 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                     }
                 }
             }
+        }
+
+        // A link names a work, but some payloads name an edition. Attach only when the ID
+        // identifies one book; an ID that is a work of one book and an edition of another is skipped.
+        private static SeriesBookLink ResolveSeriesLink(SeriesWorkLinkResource link, Series series, Dictionary<string, Book> bookDict, Dictionary<string, Book> editionBookDict)
+        {
+            var key = link.ForeignWorkId.ToString();
+            bookDict.TryGetValue(key, out var workBook);
+            editionBookDict.TryGetValue(key, out var editionBook);
+
+            if (workBook != null && editionBook != null && workBook.ForeignBookId != editionBook.ForeignBookId)
+            {
+                return null;
+            }
+
+            var book = workBook ?? editionBook;
+
+            if (book == null)
+            {
+                return null;
+            }
+
+            return new SeriesBookLink
+            {
+                Book = book,
+                Series = series,
+                IsPrimary = link.Primary,
+                Position = link.PositionInSeries,
+                SeriesPosition = link.SeriesPosition
+            };
         }
 
         private static Series MapSeries(SeriesResource resource)
@@ -1033,6 +1216,64 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             return value;
         }
 
+        private static List<int> GetMissingSeriesWorkIds(AuthorResource resource)
+        {
+            if (resource?.Works == null || resource.Series == null)
+            {
+                return new List<int>();
+            }
+
+            var knownWorkIds = resource.Works
+                .Where(x => x != null && x.ForeignId > 0)
+                .Select(x => x.ForeignId)
+                .ToHashSet();
+
+            // A series link can name an edition. Never fetch a known edition ID as if it were a work.
+            var knownEditionIds = resource.Works
+                .Where(x => x?.Books != null)
+                .SelectMany(x => x.Books)
+                .Where(x => x != null)
+                .Select(x => x.ForeignId)
+                .ToHashSet();
+
+            return resource.Series
+                .Where(x => x?.LinkItems != null)
+                .SelectMany(x => x.LinkItems)
+                .Where(x => x != null && x.ForeignWorkId > 0 && !knownWorkIds.Contains(x.ForeignWorkId) && !knownEditionIds.Contains(x.ForeignWorkId))
+                .Select(x => x.ForeignWorkId)
+                .Distinct()
+                .ToList();
+        }
+
+        private static void MergeSeriesSupplementalWorks(AuthorResource resource, IEnumerable<WorkResource> supplementalWorks, int authorForeignId)
+        {
+            if (resource?.Works == null || supplementalWorks == null)
+            {
+                return;
+            }
+
+            var knownWorkIds = resource.Works
+                .Where(x => x != null && x.ForeignId > 0)
+                .Select(x => x.ForeignId)
+                .ToHashSet();
+
+            foreach (var work in supplementalWorks.Where(x => x != null && x.ForeignId > 0))
+            {
+                if (knownWorkIds.Contains(work.ForeignId))
+                {
+                    continue;
+                }
+
+                if (!GetAuthorIds(work).Contains(authorForeignId))
+                {
+                    continue;
+                }
+
+                resource.Works.Add(work);
+                knownWorkIds.Add(work.ForeignId);
+            }
+        }
+
         private static Dictionary<string, AuthorMetadata> MergeAuthorMetadata(
             Dictionary<string, AuthorMetadata> authors,
             List<AuthorResource> workAuthors)
@@ -1104,6 +1345,34 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 .Select(x => x.ForeignId)
                 .Distinct()
                 .ToList() ?? new List<int>();
+        }
+
+        // Counts every HTTP request one author's series backfill sends and bounds the time it may wait.
+        private sealed class SeriesBackfillBudget
+        {
+            private readonly Stopwatch _clock = Stopwatch.StartNew();
+
+            public int Requests { get; private set; }
+
+            public TimeSpan Remaining
+            {
+                get
+                {
+                    var left = MaxSeriesBackfillDuration - _clock.Elapsed;
+                    return left > TimeSpan.Zero ? left : TimeSpan.Zero;
+                }
+            }
+
+            public bool Exhausted => Requests >= MaxSeriesBackfillRequests || Remaining == TimeSpan.Zero;
+
+            public void Spend()
+            {
+                Requests++;
+            }
+        }
+
+        private sealed class SeriesBackfillBudgetExhaustedException : Exception
+        {
         }
     }
 }
