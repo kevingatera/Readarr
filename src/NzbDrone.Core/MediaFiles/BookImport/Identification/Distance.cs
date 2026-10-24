@@ -13,6 +13,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             { "source", 2.0 },
             { "author", 3.0 },
             { "book", 3.0 },
+            { "book_conflict", 10.0 },
+            { "series_part", 3.0 },
             { "isbn", 10.0 },
             { "isbn_missing", 0.1 },
             { "edition_isbn_missing", 5.0 },
@@ -131,7 +133,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             return new string(arr);
         }
 
-        private double StringScore(string value, string target)
+        public static double StringScore(string value, string target)
         {
             // Adds a penaltly based on the distance between value and target
             var cleanValue = Clean(value);
