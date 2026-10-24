@@ -1,11 +1,14 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using FizzWare.NBuilder;
 using Moq;
 using NUnit.Framework;
 using NzbDrone.Core.Books;
+using NzbDrone.Core.Datastore;
 using NzbDrone.Core.ImportLists;
 using NzbDrone.Core.Lifecycle;
+using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.Profiles.Metadata;
 using NzbDrone.Core.RootFolders;
 using NzbDrone.Core.Test.Framework;
@@ -223,6 +226,109 @@ namespace NzbDrone.Core.Test.Profiles.Metadata
             Subject.Delete(1);
 
             Mocker.GetMock<IMetadataProfileRepository>().Verify(c => c.Delete(1), Times.Once());
+        }
+
+        [Test]
+        public void should_not_filter_books_by_popularity_when_author_has_no_rating_votes()
+        {
+            var profile = BuildMetadataProfile();
+            var remoteBooks = new List<Book>
+            {
+                BuildBook("book-1", "First Book", votes: 0),
+                BuildBook("book-2", "Second Book", votes: 0)
+            };
+
+            Mocker.GetMock<IMetadataProfileRepository>()
+                .Setup(x => x.Get(profile.Id))
+                .Returns(profile);
+            Mocker.GetMock<IAuthorService>()
+                .Setup(x => x.FindById("author-1"))
+                .Returns((Author)null);
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(x => x.GetFilesByAuthor(0))
+                .Returns(new List<BookFile>());
+
+            var result = Subject.FilterBooks(BuildAuthor("author-1", remoteBooks), profile.Id);
+
+            Assert.That(result.Select(x => x.ForeignBookId), Is.EquivalentTo(remoteBooks.Select(x => x.ForeignBookId)));
+        }
+
+        [Test]
+        public void should_still_filter_books_by_popularity_when_any_rating_votes_exist()
+        {
+            var profile = BuildMetadataProfile();
+            var lowPopularity = BuildBook("book-1", "Low Popularity", votes: 0);
+            var highPopularity = BuildBook("book-2", "High Popularity", votes: 100, value: 4.5m);
+            var remoteBooks = new List<Book> { lowPopularity, highPopularity };
+
+            Mocker.GetMock<IMetadataProfileRepository>()
+                .Setup(x => x.Get(profile.Id))
+                .Returns(profile);
+            Mocker.GetMock<IAuthorService>()
+                .Setup(x => x.FindById("author-1"))
+                .Returns((Author)null);
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(x => x.GetFilesByAuthor(0))
+                .Returns(new List<BookFile>());
+
+            var result = Subject.FilterBooks(BuildAuthor("author-1", remoteBooks), profile.Id);
+
+            Assert.That(result.Select(x => x.ForeignBookId), Is.EquivalentTo(new[] { highPopularity.ForeignBookId }));
+        }
+
+        private static MetadataProfile BuildMetadataProfile()
+        {
+            return new MetadataProfile
+            {
+                Id = 1,
+                Name = "Standard",
+                MinPopularity = 350,
+                SkipMissingDate = false,
+                SkipMissingIsbn = false,
+                SkipPartsAndSets = false,
+                SkipSeriesSecondary = false,
+                AllowedLanguages = string.Empty,
+                MinPages = 0,
+                Ignored = new List<string>()
+            };
+        }
+
+        private static Author BuildAuthor(string foreignAuthorId, List<Book> books)
+        {
+            return new Author
+            {
+                Metadata = new LazyLoaded<AuthorMetadata>(new AuthorMetadata { ForeignAuthorId = foreignAuthorId }),
+                Books = new LazyLoaded<List<Book>>(books),
+                Series = new LazyLoaded<List<Series>>(new List<Series>())
+            };
+        }
+
+        private static Book BuildBook(string foreignBookId, string title, int votes, decimal value = 0m)
+        {
+            var book = new Book
+            {
+                ForeignBookId = foreignBookId,
+                Title = title,
+                Ratings = new Ratings
+                {
+                    Votes = votes,
+                    Value = value
+                },
+                ReleaseDate = new DateTime(2023, 1, 1),
+                Editions = new LazyLoaded<List<Edition>>(new List<Edition>
+                {
+                    new Edition
+                    {
+                        ForeignEditionId = $"{foreignBookId}-edition-1",
+                        Title = $"{title} Edition",
+                        Isbn13 = "9781234567890",
+                        PageCount = 250,
+                        Ratings = new Ratings()
+                    }
+                })
+            };
+
+            return book;
         }
     }
 }
