@@ -1,15 +1,21 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using FluentAssertions;
+using Moq;
 using NUnit.Framework;
+using NzbDrone.Common.Http;
 using NzbDrone.Core.Books;
+using NzbDrone.Core.MetadataSource;
 using NzbDrone.Core.MetadataSource.BookInfo;
+using NzbDrone.Core.Test.Framework;
 
 namespace NzbDrone.Core.Test.MetadataSource.Goodreads
 {
     [TestFixture]
-    public class BookInfoProxyMappingFixture
+    public class BookInfoProxyMappingFixture : CoreTest<BookInfoProxy>
     {
         [Test]
         public void should_fallback_to_work_authors_when_books_are_missing()
@@ -140,6 +146,135 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
                 new DateTime?(default(DateTime)));
 
             normalized.Should().BeNull();
+        }
+
+        [Test]
+        public void should_drop_malformed_release_dates_from_bookinfo_payload()
+        {
+            var options = (JsonSerializerOptions)typeof(BookInfoProxy)
+                .GetField("SerializerSettings", BindingFlags.NonPublic | BindingFlags.Static)
+                .GetValue(null);
+
+            var work = JsonSerializer.Deserialize<WorkResource>(
+                "{\"foreignId\":10,\"title\":\"1812\",\"releaseDate\":\"+020101-01-01T00:00:00.000Z\"}",
+                options);
+
+            var book = InvokePrivateStatic<Book>("MapBook", work);
+
+            book.ReleaseDate.Should().BeNull();
+        }
+
+        // Bulk search goes through Newtonsoft and MapBulkBook, not the author/book poll path.
+        [Test]
+        public void should_keep_bulk_search_results_when_top_level_authors_are_missing()
+        {
+            ArrangeBulkSearch(
+                new List<NzbDrone.Core.MetadataSource.Goodreads.SearchJsonResource> { SearchResult(10, 100, 1), SearchResult(11, 110, 1) },
+                new List<WorkResource> { SparseWork(10, 100, new[] { 1 }, "Eric Flint"), SparseWork(11, 110, new[] { 1 }, "Eric Flint") },
+                authors: null);
+
+            var result = Subject.SearchForNewBook("1812 eric flint", null, false);
+
+            result.Select(x => x.ForeignBookId).Should().BeEquivalentTo("10", "11");
+            result.All(x => x.AuthorMetadata.Value.Name == "Eric Flint").Should().BeTrue();
+        }
+
+        [Test]
+        public void should_skip_bulk_work_without_author_and_keep_the_rest_of_the_search()
+        {
+            var orphan = new WorkResource
+            {
+                ForeignId = 11,
+                Title = "Orphan",
+                Books = new List<BookResource> { new BookResource { ForeignId = 110, Title = "Orphan" } },
+                Authors = new List<AuthorResource>()
+            };
+
+            ArrangeBulkSearch(
+                new List<NzbDrone.Core.MetadataSource.Goodreads.SearchJsonResource> { SearchResult(10, 100, 1), SearchResult(11, 110, 0) },
+                new List<WorkResource> { SparseWork(10, 100, new[] { 1 }, "Eric Flint"), orphan },
+                new List<AuthorResource> { new AuthorResource { ForeignId = 1, Name = "Eric Flint" } });
+
+            var result = Subject.SearchForNewBook("1812 eric flint", null, false);
+
+            result.Select(x => x.ForeignBookId).Should().Equal("10");
+        }
+
+        [Test]
+        public void should_attribute_coauthored_bulk_work_to_its_primary_author()
+        {
+            var coauthored = new WorkResource
+            {
+                ForeignId = 10,
+                Title = "Coauthored",
+                Books = new List<BookResource>
+                {
+                    new BookResource
+                    {
+                        ForeignId = 100,
+                        Title = "Coauthored",
+                        Contributors = new List<ContributorResource>
+                        {
+                            new ContributorResource { ForeignId = 1, Role = "Author" },
+                            new ContributorResource { ForeignId = 2, Role = "Author" }
+                        }
+                    }
+                },
+                Authors = new List<AuthorResource>
+                {
+                    new AuthorResource { ForeignId = 1, Name = "Eric Flint" },
+                    new AuthorResource { ForeignId = 2, Name = "Ryk Spoor" }
+                }
+            };
+
+            ArrangeBulkSearch(
+                new List<NzbDrone.Core.MetadataSource.Goodreads.SearchJsonResource> { SearchResult(10, 100, 1), SearchResult(11, 110, 1) },
+                new List<WorkResource> { coauthored, SparseWork(11, 110, new[] { 1 }, "Eric Flint") },
+                authors: null);
+
+            var result = Subject.SearchForNewBook("coauthored", null, false);
+
+            result.Select(x => x.ForeignBookId).Should().BeEquivalentTo("10", "11");
+            result.Single(x => x.ForeignBookId == "10").AuthorMetadata.Value.ForeignAuthorId.Should().Be("1");
+        }
+
+        private void ArrangeBulkSearch(List<NzbDrone.Core.MetadataSource.Goodreads.SearchJsonResource> searchResults, List<WorkResource> works, List<AuthorResource> authors)
+        {
+            Mocker.GetMock<IMetadataRequestBuilder>()
+                .Setup(x => x.GetRequestBuilder())
+                .Returns(new HttpRequestBuilder("http://bookinfo.test/{route}").CreateFactory());
+
+            Mocker.GetMock<NzbDrone.Core.MetadataSource.Goodreads.IGoodreadsSearchProxy>()
+                .Setup(x => x.Search(It.IsAny<string>()))
+                .Returns(searchResults);
+
+            var body = Newtonsoft.Json.JsonConvert.SerializeObject(new BulkBookResource { Works = works, Authors = authors });
+
+            Mocker.GetMock<IHttpClient>()
+                .Setup(x => x.Post<BulkBookResource>(It.IsAny<HttpRequest>()))
+                .Returns<HttpRequest>(r => new HttpResponse<BulkBookResource>(new HttpResponse(r, new HttpHeader(), body)));
+        }
+
+        private static NzbDrone.Core.MetadataSource.Goodreads.SearchJsonResource SearchResult(int workId, int bookId, int authorId)
+        {
+            return new NzbDrone.Core.MetadataSource.Goodreads.SearchJsonResource
+            {
+                WorkId = workId,
+                BookId = bookId,
+                Author = new NzbDrone.Core.MetadataSource.Goodreads.AuthorJsonResource { Id = authorId }
+            };
+        }
+
+        // Work with one edition and its authors listed on the work itself, with no top-level bulk authors.
+        private static WorkResource SparseWork(int workId, int editionId, int[] authorIds, string authorName)
+        {
+            return new WorkResource
+            {
+                ForeignId = workId,
+                Title = $"Work {workId}",
+                Books = new List<BookResource> { new BookResource { ForeignId = editionId, Title = $"Work {workId}" } },
+                Authors = authorIds.Select(id => new AuthorResource { ForeignId = id, Name = authorName }).ToList()
+            };
         }
 
         private static T InvokePrivateStatic<T>(string methodName, params object[] args)

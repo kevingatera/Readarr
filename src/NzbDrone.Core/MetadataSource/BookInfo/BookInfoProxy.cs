@@ -28,7 +28,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         private static readonly JsonSerializerOptions SerializerSettings = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = false,
-            Converters = { new STJUtcConverter() }
+            Converters = { new BookInfoDateConverter() }
         };
 
         private readonly IHttpClient _httpClient;
@@ -506,7 +506,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
 
             var idStr = ids.Select(x => x.ToString()).ToList();
 
-            return mapped.OrderBy(b => idStr.IndexOf(b.Editions.Value.First().ForeignEditionId)).ToList();
+            return mapped.OrderBy(b => idStr.IndexOf(b.Editions.Value.FirstOrDefault()?.ForeignEditionId)).ToList();
         }
 
         private List<Book> MapBulkBook(BulkBookResource resource)
@@ -518,20 +518,32 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 return books;
             }
 
-            var authors = resource.Authors.Select(MapAuthorMetadata).ToDictionary(x => x.ForeignAuthorId, x => x);
-            var series = resource.Series.Select(MapSeries).ToList();
+            var resourceAuthors = resource.Authors ?? new List<AuthorResource>();
+            var resourceSeries = resource.Series ?? new List<SeriesResource>();
 
-            foreach (var work in resource.Works)
+            var authors = resourceAuthors.Select(MapAuthorMetadata).ToDictionary(x => x.ForeignAuthorId, x => x);
+            var series = resourceSeries.Select(MapSeries).ToList();
+
+            foreach (var work in resource.Works ?? new List<WorkResource>())
             {
-                var book = MapBook(work);
-                var authorId = GetAuthorId(work).ToString();
+                var authorId = GetAuthorId(work);
 
-                AddDbIds(authorId, book, MergeAuthorMetadata(authors, work.Authors));
+                // A work with no author cannot be attached to a result. Skip it so one sparse
+                // work does not discard the whole search.
+                if (authorId == 0)
+                {
+                    _logger.Debug("Skipping work {0} from bulk search: no author information", work.ForeignId);
+                    continue;
+                }
+
+                var book = MapBook(work);
+
+                AddDbIds(authorId.ToString(), book, MergeAuthorMetadata(authors, work.Authors));
 
                 books.Add(book);
             }
 
-            MapSeriesLinks(series, books, resource.Series);
+            MapSeriesLinks(series, books, resourceSeries);
 
             return books;
         }
