@@ -60,6 +60,10 @@ namespace NzbDrone.Core.Test.MusicTests
             Mocker.GetMock<IBookService>(MockBehavior.Strict)
                 .Setup(s => s.InsertMany(It.IsAny<List<Book>>()));
 
+            Mocker.GetMock<IBookService>(MockBehavior.Strict)
+                .Setup(s => s.GetBooksByAuthorMetadataId(It.IsAny<int>()))
+                .Returns(new List<Book>());
+
             Mocker.GetMock<IMetadataProfileService>()
                 .Setup(s => s.FilterBooks(It.IsAny<Author>(), It.IsAny<int>()))
                 .Returns(_remoteBooks);
@@ -70,6 +74,10 @@ namespace NzbDrone.Core.Test.MusicTests
 
             Mocker.GetMock<IMediaFileService>()
                 .Setup(x => x.GetFilesByAuthor(It.IsAny<int>()))
+                .Returns(new List<BookFile>());
+
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(x => x.GetFilesByAuthorMetadataId(It.IsAny<int>()))
                 .Returns(new List<BookFile>());
 
             Mocker.GetMock<IHistoryService>()

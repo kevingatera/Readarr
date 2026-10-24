@@ -4,8 +4,11 @@ using System.Linq;
 using FluentValidation;
 using FluentValidation.Results;
 using NLog;
+using NzbDrone.Core.Books.Events;
 using NzbDrone.Core.Exceptions;
 using NzbDrone.Core.ImportLists.Exclusions;
+using NzbDrone.Core.MediaFiles;
+using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.MetadataSource;
 
 namespace NzbDrone.Core.Books
@@ -23,6 +26,9 @@ namespace NzbDrone.Core.Books
         private readonly IBookService _bookService;
         private readonly IProvideBookInfo _bookInfo;
         private readonly IImportListExclusionService _importListExclusionService;
+        private readonly IMediaFileService _mediaFileService;
+        private readonly IEditionService _editionService;
+        private readonly IEventAggregator _eventAggregator;
         private readonly Logger _logger;
 
         public AddBookService(IAuthorService authorService,
@@ -30,6 +36,9 @@ namespace NzbDrone.Core.Books
                                IBookService bookService,
                                IProvideBookInfo bookInfo,
                                IImportListExclusionService importListExclusionService,
+                               IMediaFileService mediaFileService,
+                               IEditionService editionService,
+                               IEventAggregator eventAggregator,
                                Logger logger)
         {
             _authorService = authorService;
@@ -37,6 +46,9 @@ namespace NzbDrone.Core.Books
             _bookService = bookService;
             _bookInfo = bookInfo;
             _importListExclusionService = importListExclusionService;
+            _mediaFileService = mediaFileService;
+            _editionService = editionService;
+            _eventAggregator = eventAggregator;
             _logger = logger;
         }
 
@@ -44,6 +56,7 @@ namespace NzbDrone.Core.Books
         {
             _logger.Debug($"Adding book {book}");
 
+            book.AddOptions ??= new AddBookOptions();
             book = AddSkyhookData(book);
 
             // we allow adding extra editions, so check if the book already exists
@@ -74,9 +87,63 @@ namespace NzbDrone.Core.Books
 
             book.Author = dbAuthor;
             book.AuthorMetadataId = dbAuthor.AuthorMetadataId;
+
+            var equivalentBook = FindEquivalentExistingBook(book, dbAuthor.AuthorMetadataId);
+            if (equivalentBook != null && equivalentBook.Id != book.Id)
+            {
+                _logger.Info("Book {0} is equivalent to existing book {1}; using existing book instead of adding duplicate.", book, equivalentBook);
+                return ApplyRequestToExistingBook(equivalentBook.Id, book, doRefresh);
+            }
+
             _bookService.AddBook(book, doRefresh);
 
             return book;
+        }
+
+        // The requested edition, add options and search apply to the existing row, not to a duplicate.
+        private Book ApplyRequestToExistingBook(int existingBookId, Book requested, bool doRefresh)
+        {
+            var existing = _bookService.GetBook(existingBookId);
+            existing.AddOptions = requested.AddOptions;
+
+            var requestedEdition = requested.Editions.Value.FirstOrDefault(x => x.Monitored) ?? requested.Editions.Value.First();
+            var edition = existing.Editions.Value.FirstOrDefault(x => x.ForeignEditionId == requestedEdition.ForeignEditionId);
+
+            if (edition == null)
+            {
+                requestedEdition.BookId = existing.Id;
+                _editionService.InsertMany(new List<Edition> { requestedEdition });
+                edition = _editionService.GetEditionByForeignEditionId(requestedEdition.ForeignEditionId);
+            }
+
+            if (edition == null)
+            {
+                throw new InvalidOperationException($"Requested edition {requestedEdition.ForeignEditionId} could not be bound to book {existing.Id}");
+            }
+
+            _editionService.SetMonitored(edition);
+            _eventAggregator.PublishEvent(new BookAddedEvent(_bookService.GetBook(existing.Id), doRefresh));
+
+            return existing;
+        }
+
+        private Book FindEquivalentExistingBook(Book book, int authorMetadataId)
+        {
+            var localBooks = (_bookService.GetBooksByAuthorMetadataId(authorMetadataId) ?? new List<Book>())
+                                         .Where(x => x.Id != book.Id)
+                                         .ToList();
+
+            if (!localBooks.Any())
+            {
+                return null;
+            }
+
+            var fileCounts = (_mediaFileService.GetFilesByAuthorMetadataId(authorMetadataId) ?? new List<BookFile>())
+                                              .Where(x => x.Edition?.Value?.Book?.Value != null)
+                                              .GroupBy(x => x.Edition.Value.Book.Value.Id)
+                                              .ToDictionary(x => x.Key, x => x.Count());
+
+            return EquivalentBookMergeHelper.FindMatchingLocalBook(localBooks, book, fileCounts).Item1;
         }
 
         public List<Book> AddBooks(List<Book> books, bool doRefresh = true)
@@ -103,7 +170,16 @@ namespace NzbDrone.Core.Books
 
         private Book AddSkyhookData(Book newBook)
         {
-            var editionId = newBook.Editions.Value.Single(x => x.Monitored).ForeignEditionId;
+            var editionId = newBook.Editions?.Value?.SingleOrDefault(x => x.Monitored)?.ForeignEditionId
+                            ?? newBook.ForeignEditionId;
+
+            if (string.IsNullOrWhiteSpace(editionId))
+            {
+                throw new ValidationException(new List<ValidationFailure>
+                                              {
+                                                  new ValidationFailure("ForeignEditionId", "A monitored edition is required", newBook.ForeignBookId)
+                                              });
+            }
 
             Tuple<string, Book, List<AuthorMetadata>> tuple = null;
             try
@@ -123,9 +199,24 @@ namespace NzbDrone.Core.Books
             newBook.UseMetadataFrom(tuple.Item2);
             newBook.Added = DateTime.UtcNow;
 
-            newBook.Editions = tuple.Item2.Editions.Value;
+            newBook.Editions = tuple.Item2.Editions?.Value ?? new List<Edition>();
             newBook.Editions.Value.ForEach(x => x.Monitored = false);
-            newBook.Editions.Value.Single(x => x.ForeignEditionId == editionId).Monitored = true;
+
+            var matchingEditions = newBook.Editions.Value
+                .Where(x => x.ForeignEditionId == editionId)
+                .ToList();
+
+            if (matchingEditions.Count != 1)
+            {
+                _logger.Warn("Unable to add book {0}: requested edition {1} was not uniquely present in refreshed metadata", newBook.ForeignBookId, editionId);
+
+                throw new ValidationException(new List<ValidationFailure>
+                                              {
+                                                  new ValidationFailure("ForeignEditionId", "The requested edition was not present exactly once in the latest metadata. Refresh the lookup and select the edition again.", editionId)
+                                              });
+            }
+
+            matchingEditions[0].Monitored = true;
 
             var metadata = tuple.Item3.FirstOrDefault(x => x.ForeignAuthorId == tuple.Item1);
             newBook.AuthorMetadata = metadata;
