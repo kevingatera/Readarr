@@ -6,9 +6,12 @@ using System.Linq;
 using NLog;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.EnvironmentInfo;
+using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Books;
+using NzbDrone.Core.Datastore;
 using NzbDrone.Core.DecisionEngine;
 using NzbDrone.Core.Download;
+using NzbDrone.Core.History;
 using NzbDrone.Core.MediaFiles.BookImport;
 using NzbDrone.Core.MediaFiles.Events;
 using NzbDrone.Core.Messaging.Events;
@@ -29,6 +32,8 @@ namespace NzbDrone.Core.MediaFiles
         private readonly IDiskProvider _diskProvider;
         private readonly IDiskScanService _diskScanService;
         private readonly IAuthorService _authorService;
+        private readonly IBookService _bookService;
+        private readonly IHistoryService _historyService;
         private readonly IParsingService _parsingService;
         private readonly IMakeImportDecision _importDecisionMaker;
         private readonly IImportApprovedBooks _importApprovedTracks;
@@ -39,6 +44,8 @@ namespace NzbDrone.Core.MediaFiles
         public DownloadedBooksImportService(IDiskProvider diskProvider,
                                              IDiskScanService diskScanService,
                                              IAuthorService authorService,
+                                             IBookService bookService,
+                                             IHistoryService historyService,
                                              IParsingService parsingService,
                                              IMakeImportDecision importDecisionMaker,
                                              IImportApprovedBooks importApprovedTracks,
@@ -49,6 +56,8 @@ namespace NzbDrone.Core.MediaFiles
             _diskProvider = diskProvider;
             _diskScanService = diskScanService;
             _authorService = authorService;
+            _bookService = bookService;
+            _historyService = historyService;
             _parsingService = parsingService;
             _importDecisionMaker = importDecisionMaker;
             _importApprovedTracks = importApprovedTracks;
@@ -211,6 +220,8 @@ namespace NzbDrone.Core.MediaFiles
             {
                 Author = author
             };
+            ApplyGrabHistoryOverride(idOverrides, downloadClientItem, author, new[] { directoryInfo.Name });
+
             var idInfo = new ImportDecisionMakerInfo
             {
                 DownloadClientItem = downloadClientItem,
@@ -296,6 +307,8 @@ namespace NzbDrone.Core.MediaFiles
             {
                 Author = author
             };
+            ApplyGrabHistoryOverride(idOverrides, downloadClientItem, author, new[] { Path.GetFileNameWithoutExtension(fileInfo.Name) });
+
             var idInfo = new ImportDecisionMakerInfo
             {
                 DownloadClientItem = downloadClientItem
@@ -312,6 +325,108 @@ namespace NzbDrone.Core.MediaFiles
             var decisions = _importDecisionMaker.GetImportDecisions(new List<IFileInfo>() { fileInfo }, idOverrides, idInfo, idConfig);
 
             return _importApprovedTracks.Import(decisions, true, downloadClientItem, importMode);
+        }
+
+        // Applies the book from the latest grab only when the grab names exactly one book and
+        // the current download title and file name agree with it. Anything else falls back to identification.
+        private void ApplyGrabHistoryOverride(IdentificationOverrides idOverrides, DownloadClientItem downloadClientItem, Author author, IEnumerable<string> fileNames)
+        {
+            var historyBook = GetGrabHistoryBook(downloadClientItem, author, fileNames);
+
+            if (historyBook == null)
+            {
+                return;
+            }
+
+            idOverrides.Book = historyBook;
+            idOverrides.Author = author ?? historyBook.Author?.Value;
+        }
+
+        private Book GetGrabHistoryBook(DownloadClientItem downloadClientItem, Author author, IEnumerable<string> fileNames)
+        {
+            if (downloadClientItem == null || downloadClientItem.DownloadId.IsNullOrWhiteSpace())
+            {
+                return null;
+            }
+
+            var grabbedHistory = _historyService.Find(downloadClientItem.DownloadId, EntityHistoryEventType.Grabbed) ?? new List<EntityHistory>();
+
+            var grabbedBookIds = GrabCohort.Latest(grabbedHistory)
+                .Select(h => h.BookId)
+                .Where(id => id > 0)
+                .Distinct()
+                .ToList();
+
+            if (grabbedBookIds.Count != 1)
+            {
+                return null;
+            }
+
+            Book historyBook;
+
+            try
+            {
+                historyBook = _bookService.GetBook(grabbedBookIds[0]);
+            }
+            catch (ModelNotFoundException e)
+            {
+                _logger.Debug(e, "Grab history for downloadId={0} references a deleted book", downloadClientItem.DownloadId);
+                return null;
+            }
+
+            if (author != null && historyBook.AuthorId != author.Id)
+            {
+                return null;
+            }
+
+            if (!MatchesCurrentTitles(historyBook, downloadClientItem.Title, fileNames))
+            {
+                _logger.Debug("Skipping grab history book override for downloadId={0}; current titles do not match '{1}'", downloadClientItem.DownloadId, historyBook.Title);
+                return null;
+            }
+
+            return historyBook;
+        }
+
+        // Only the current client title and file or folder names count as evidence.
+        // Titles from the old grab are not used, because a reused download hash can carry a different release.
+        private static bool MatchesCurrentTitles(Book book, string clientTitle, IEnumerable<string> fileNames)
+        {
+            var expectedTitle = Parser.Parser.NormalizeTitle(book.Title);
+
+            if (expectedTitle.IsNullOrWhiteSpace())
+            {
+                return false;
+            }
+
+            var evidence = new[] { clientTitle }
+                .Concat(fileNames)
+                .Where(name => name.IsNotNullOrWhiteSpace());
+
+            var matched = false;
+
+            foreach (var name in evidence)
+            {
+                var parsedTitle = Parser.Parser.ParseBookTitle(name)?.BookTitle;
+
+                if (parsedTitle.IsNullOrWhiteSpace())
+                {
+                    continue;
+                }
+
+                var normalizedTitle = Parser.Parser.NormalizeTitle(parsedTitle);
+
+                if (normalizedTitle.IsNullOrWhiteSpace() ||
+                    (normalizedTitle != expectedTitle && normalizedTitle.LevenshteinCoefficient(expectedTitle) < 0.9))
+                {
+                    // A parsed title that names another book contradicts the grab.
+                    return false;
+                }
+
+                matched = true;
+            }
+
+            return matched;
         }
 
         private string GetCleanedUpFolderName(string folder)

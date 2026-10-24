@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using FluentAssertions;
@@ -79,6 +80,51 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             trackedDownload.RemoteBook.Author.Should().NotBeNull();
             trackedDownload.RemoteBook.Author.Id.Should().Be(5);
             trackedDownload.RemoteBook.Books.First().Id.Should().Be(4);
+        }
+
+        [Test]
+        public void should_keep_every_book_from_the_latest_multi_book_grab()
+        {
+            var now = DateTime.UtcNow;
+
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.FindByDownloadId("35239"))
+                .Returns(new List<EntityHistory>
+                {
+                    new EntityHistory { DownloadId = "35239", EventType = EntityHistoryEventType.Grabbed, SourceTitle = "Audio Author - Audio Book [2018 - FLAC]", AuthorId = 5, BookId = 6, Date = now },
+                    new EntityHistory { DownloadId = "35239", EventType = EntityHistoryEventType.Grabbed, SourceTitle = "Audio Author - Audio Book [2018 - FLAC]", AuthorId = 5, BookId = 5, Date = now.AddMilliseconds(-3) },
+                    new EntityHistory { DownloadId = "35239", EventType = EntityHistoryEventType.Grabbed, SourceTitle = "Audio Author - Audio Book [2018 - FLAC]", AuthorId = 5, BookId = 4, Date = now.AddMilliseconds(-6) },
+                    new EntityHistory { DownloadId = "35239", EventType = EntityHistoryEventType.Grabbed, SourceTitle = "Audio Author - Old Book [2016 - FLAC]", AuthorId = 5, BookId = 9, Date = now.AddHours(-2) }
+                });
+
+            IEnumerable<int> mappedBookIds = null;
+
+            Mocker.GetMock<IParsingService>()
+                  .Setup(s => s.Map(It.IsAny<ParsedBookInfo>(), 5, It.IsAny<IEnumerable<int>>()))
+                  .Callback<ParsedBookInfo, int, IEnumerable<int>>((info, authorId, bookIds) => mappedBookIds = bookIds.ToList())
+                  .Returns(new RemoteBook { Author = new Author { Id = 5 }, Books = new List<Book> { new Book { Id = 4 } } });
+
+            var client = new DownloadClientDefinition()
+            {
+                Id = 1,
+                Protocol = DownloadProtocol.Torrent
+            };
+
+            var item = new DownloadClientItem()
+            {
+                Title = "The torrent release folder",
+                DownloadId = "35239",
+                DownloadClientInfo = new DownloadClientItemClientInfo
+                {
+                    Protocol = client.Protocol,
+                    Id = client.Id,
+                    Name = client.Name
+                }
+            };
+
+            Subject.TrackDownload(client, item);
+
+            mappedBookIds.Should().BeEquivalentTo(new[] { 4, 5, 6 });
         }
 
         [Test]
