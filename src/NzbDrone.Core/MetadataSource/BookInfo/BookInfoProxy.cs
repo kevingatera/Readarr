@@ -247,6 +247,12 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             return Search(asin, true);
         }
 
+        // Virtual so tests can record back-off waits instead of sleeping.
+        protected virtual void Pause(TimeSpan duration)
+        {
+            Thread.Sleep(duration);
+        }
+
         private List<Book> Search(string query, bool getAllEditions)
         {
             List<SearchJsonResource> result;
@@ -709,26 +715,29 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             }
 
             var supplementalWorks = new List<WorkResource>();
-            var clock = Stopwatch.StartNew();
-            var requests = 0;
+            var budget = new SeriesBackfillBudget();
+            var started = 0;
 
             foreach (var workId in missingWorkIds)
             {
-                if (requests >= MaxSeriesBackfillRequests || clock.Elapsed > MaxSeriesBackfillDuration)
+                if (budget.Exhausted)
                 {
-                    _logger.Debug("Series backfill budget reached for author {0} after {1} request(s); {2} work(s) left out", authorForeignId, requests, missingWorkIds.Count - requests);
                     break;
                 }
 
-                requests++;
+                started++;
 
                 try
                 {
-                    var workResource = FetchSeriesWork(workId);
+                    var workResource = FetchSeriesWork(workId, budget);
                     if (workResource != null)
                     {
                         supplementalWorks.Add(workResource);
                     }
+                }
+                catch (SeriesBackfillBudgetExhaustedException)
+                {
+                    break;
                 }
                 catch (BookNotFoundException)
                 {
@@ -738,6 +747,11 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 {
                     _logger.Warn(e, "Failed to backfill series-linked work {0} for author {1}", workId, authorForeignId);
                 }
+            }
+
+            if (started < missingWorkIds.Count)
+            {
+                _logger.Debug("Series backfill budget reached for author {0} after {1} HTTP request(s); {2} work(s) left out", authorForeignId, budget.Requests, missingWorkIds.Count - started);
             }
 
             var before = authorResource.Works.Count;
@@ -751,9 +765,9 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         }
 
         // Returns null when the work cannot be used: a redirect, or a payload for a different work ID.
-        private WorkResource FetchSeriesWork(int workId)
+        private WorkResource FetchSeriesWork(int workId, SeriesBackfillBudget budget)
         {
-            var httpResponse = FetchWork(workId.ToString(), 3);
+            var httpResponse = FetchWork(workId.ToString(), 3, budget);
 
             if (httpResponse.StatusCode == HttpStatusCode.NotFound)
             {
@@ -776,15 +790,22 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             return resource?.ForeignId == workId ? resource : null;
         }
 
-        private HttpResponse FetchWork(string foreignWorkId, int maxAttempts)
+        private HttpResponse FetchWork(string foreignWorkId, int maxAttempts, SeriesBackfillBudget budget = null)
         {
             for (var attempt = 0; attempt < maxAttempts; attempt++)
             {
+                if (budget != null && budget.Exhausted)
+                {
+                    throw new SeriesBackfillBudgetExhaustedException();
+                }
+
                 var httpRequest = _requestBuilder.GetRequestBuilder().Create()
                     .SetSegment("route", $"work/{foreignWorkId}")
                     .Build();
 
                 httpRequest.SuppressHttpError = true;
+
+                budget?.Spend();
 
                 // A work request may redirect to an author.
                 var httpResponse = _httpClient.Get(httpRequest);
@@ -794,7 +815,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                     return httpResponse;
                 }
 
-                WaitUntilRetry(httpResponse);
+                WaitUntilRetry(httpResponse, budget);
             }
 
             throw new BookInfoException($"Still rate limited fetching work {foreignWorkId}");
@@ -878,7 +899,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             return Tuple.Create(authorId, book, metadata);
         }
 
-        private void WaitUntilRetry(HttpResponse response)
+        private void WaitUntilRetry(HttpResponse response, SeriesBackfillBudget budget = null)
         {
             var seconds = 5;
 
@@ -892,9 +913,17 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 }
             }
 
-            _logger.Info("BookInfo returned 429, backing off for {0}s", seconds);
+            var wait = TimeSpan.FromSeconds(Math.Max(seconds, 0));
 
-            Thread.Sleep(TimeSpan.FromSeconds(seconds));
+            // A backfill wait may not run past the backfill deadline.
+            if (budget != null && wait > budget.Remaining)
+            {
+                wait = budget.Remaining;
+            }
+
+            _logger.Info("BookInfo returned 429, backing off for {0}s", Math.Round(wait.TotalSeconds, 1));
+
+            Pause(wait);
         }
 
         private static AuthorMetadata MapAuthorMetadata(AuthorResource resource)
@@ -1316,6 +1345,34 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 .Select(x => x.ForeignId)
                 .Distinct()
                 .ToList() ?? new List<int>();
+        }
+
+        // Counts every HTTP request one author's series backfill sends and bounds the time it may wait.
+        private sealed class SeriesBackfillBudget
+        {
+            private readonly Stopwatch _clock = Stopwatch.StartNew();
+
+            public int Requests { get; private set; }
+
+            public TimeSpan Remaining
+            {
+                get
+                {
+                    var left = MaxSeriesBackfillDuration - _clock.Elapsed;
+                    return left > TimeSpan.Zero ? left : TimeSpan.Zero;
+                }
+            }
+
+            public bool Exhausted => Requests >= MaxSeriesBackfillRequests || Remaining == TimeSpan.Zero;
+
+            public void Spend()
+            {
+                Requests++;
+            }
+        }
+
+        private sealed class SeriesBackfillBudgetExhaustedException : Exception
+        {
         }
     }
 }

@@ -175,6 +175,81 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
         }
 
         [Test]
+        public void should_count_rate_limit_retries_against_the_series_backfill_budget()
+        {
+            var httpClient = new Mock<IHttpClient>();
+            var cachedHttpClient = new Mock<ICachedHttpResponseService>();
+
+            httpClient
+                .Setup(x => x.Get(It.IsAny<HttpRequest>()))
+                .Returns((HttpRequest request) => new HttpResponse(request, new HttpHeader(), string.Empty, HttpStatusCode.NotFound));
+
+            // Work 1000 is rate limited twice before it answers 404; every HTTP request counts.
+            var workThousandResponses = new Queue<HttpStatusCode>(new[] { HttpStatusCode.TooManyRequests, HttpStatusCode.TooManyRequests, HttpStatusCode.NotFound });
+            httpClient
+                .Setup(x => x.Get(It.Is<HttpRequest>(r => r.Url.ToString().EndsWith("/work/1000"))))
+                .Returns((HttpRequest request) =>
+                {
+                    var status = workThousandResponses.Dequeue();
+                    var headers = status == HttpStatusCode.TooManyRequests ? new HttpHeader { { "Retry-After", "0" } } : new HttpHeader();
+                    return new HttpResponse(request, headers, string.Empty, status);
+                });
+
+            var linkedWorks = string.Join(",", Enumerable.Range(1000, 30).Select(id => $"{{\"ForeignWorkId\":{id},\"Primary\":true}}"));
+
+            cachedHttpClient
+                .Setup(x => x.Get(It.IsAny<HttpRequest>(), It.IsAny<bool>(), It.IsAny<TimeSpan>()))
+                .Returns((HttpRequest request, bool useCache, TimeSpan ttl) => new HttpResponse(
+                    request,
+                    new HttpHeader { ContentType = "application/json" },
+                    AuthorJson(KnownWorkWithEdition("10", "100"), "{\"ForeignId\":50,\"Title\":\"Series\",\"LinkItems\":[" + linkedWorks + "]}")));
+
+            var subject = CreateHttpBackedProxy(httpClient.Object, cachedHttpClient.Object);
+
+            subject.GetAuthorInfo("1");
+
+            httpClient.Verify(x => x.Get(It.Is<HttpRequest>(r => r.Url.ToString().Contains("/work/"))), Times.Exactly(20));
+        }
+
+        [Test]
+        public void should_not_wait_past_the_series_backfill_deadline_for_retry_after()
+        {
+            var httpClient = new Mock<IHttpClient>();
+            var cachedHttpClient = new Mock<ICachedHttpResponseService>();
+            var pauses = new List<TimeSpan>();
+
+            httpClient
+                .Setup(x => x.Get(It.IsAny<HttpRequest>()))
+                .Returns((HttpRequest request) => new HttpResponse(request, new HttpHeader(), string.Empty, HttpStatusCode.NotFound));
+
+            // Work 1000 asks for an hour once, then answers 404.
+            var workThousandResponses = new Queue<HttpStatusCode>(new[] { HttpStatusCode.TooManyRequests, HttpStatusCode.NotFound });
+            httpClient
+                .Setup(x => x.Get(It.Is<HttpRequest>(r => r.Url.ToString().EndsWith("/work/1000"))))
+                .Returns((HttpRequest request) =>
+                {
+                    var status = workThousandResponses.Dequeue();
+                    var headers = status == HttpStatusCode.TooManyRequests ? new HttpHeader { { "Retry-After", "3600" } } : new HttpHeader();
+                    return new HttpResponse(request, headers, string.Empty, status);
+                });
+
+            cachedHttpClient
+                .Setup(x => x.Get(It.IsAny<HttpRequest>(), It.IsAny<bool>(), It.IsAny<TimeSpan>()))
+                .Returns((HttpRequest request, bool useCache, TimeSpan ttl) => new HttpResponse(
+                    request,
+                    new HttpHeader { ContentType = "application/json" },
+                    AuthorJson(KnownWorkWithEdition("10", "100"), SeriesLink("50", "1000"))));
+
+            var subject = CreatePausedBookInfoProxy(pauses, httpClient.Object, cachedHttpClient.Object);
+
+            subject.GetAuthorInfo("1");
+
+            // The 429 asks for an hour; the wait is capped to what remains of the 30 second budget.
+            pauses.Should().ContainSingle();
+            pauses[0].Should().BeLessOrEqualTo(TimeSpan.FromSeconds(30));
+        }
+
+        [Test]
         public void should_drop_backfilled_work_whose_id_does_not_match_the_request()
         {
             var httpClient = new Mock<IHttpClient>();
@@ -252,6 +327,31 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
                 cacheManager.Object);
         }
 
+        private static BookInfoProxy CreatePausedBookInfoProxy(List<TimeSpan> pauses, IHttpClient httpClient, ICachedHttpResponseService cachedHttpClient)
+        {
+            var requestBuilder = new Mock<IMetadataRequestBuilder>();
+            requestBuilder
+                .Setup(x => x.GetRequestBuilder())
+                .Returns(new HttpRequestBuilder("http://metadata.invalid/{route}").CreateFactory());
+
+            var cacheManager = new Mock<ICacheManager>();
+            cacheManager
+                .Setup(x => x.GetCache<HashSet<string>>(It.IsAny<Type>()))
+                .Returns(new Mock<ICached<HashSet<string>>>().Object);
+
+            return new PausedBookInfoProxy(
+                pauses,
+                httpClient,
+                cachedHttpClient,
+                Mock.Of<IGoodreadsSearchProxy>(),
+                Mock.Of<IAuthorService>(),
+                Mock.Of<IBookService>(),
+                Mock.Of<IEditionService>(),
+                requestBuilder.Object,
+                LogManager.GetLogger("BookInfoProxySearchFallbackFixture"),
+                cacheManager.Object);
+        }
+
         // Author 1 with one known work (ForeignId = workId) carrying one edition (ForeignId = editionId).
         private static string KnownWorkWithEdition(string workId, string editionId)
         {
@@ -313,6 +413,41 @@ namespace NzbDrone.Core.Test.MetadataSource.Goodreads
                 Author = author,
                 AuthorMetadata = author.Metadata.Value
             };
+        }
+
+        private class PausedBookInfoProxy : BookInfoProxy
+        {
+            private readonly List<TimeSpan> _pauses;
+
+            public PausedBookInfoProxy(
+                List<TimeSpan> pauses,
+                IHttpClient httpClient,
+                ICachedHttpResponseService cachedHttpClient,
+                IGoodreadsSearchProxy goodreadsSearchProxy,
+                IAuthorService authorService,
+                IBookService bookService,
+                IEditionService editionService,
+                IMetadataRequestBuilder requestBuilder,
+                Logger logger,
+                ICacheManager cacheManager)
+                : base(
+                    httpClient,
+                    cachedHttpClient,
+                    goodreadsSearchProxy,
+                    authorService,
+                    bookService,
+                    editionService,
+                    requestBuilder,
+                    logger,
+                    cacheManager)
+            {
+                _pauses = pauses;
+            }
+
+            protected override void Pause(TimeSpan duration)
+            {
+                _pauses.Add(duration);
+            }
         }
 
         private class TestableBookInfoProxy : BookInfoProxy
