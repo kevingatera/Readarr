@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Abstractions;
@@ -9,8 +10,10 @@ using Moq;
 using NUnit.Framework;
 using NzbDrone.Common.Disk;
 using NzbDrone.Core.Books;
+using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.Download.TrackedDownloads;
+using NzbDrone.Core.History;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MediaFiles.BookImport;
 using NzbDrone.Core.Parser;
@@ -333,6 +336,118 @@ namespace NzbDrone.Core.Test.MediaFiles
             Subject.ProcessPath(_droneFactory, ImportMode.Copy, _trackedDownload.RemoteBook.Author, _trackedDownload.DownloadItem);
 
             DiskProvider.FolderExists(_subFolders[0]).Should().BeTrue();
+        }
+
+        private static EntityHistory GrabbedRow(int bookId, DateTime date)
+        {
+            return new EntityHistory
+            {
+                EventType = EntityHistoryEventType.Grabbed,
+                BookId = bookId,
+                Date = date,
+                SourceTitle = "Nick Cole - Dark Operator [FLAC]"
+            };
+        }
+
+        private void GivenGrabHistory(params EntityHistory[] grabs)
+        {
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.Find(_trackedDownload.DownloadItem.DownloadId, EntityHistoryEventType.Grabbed))
+                .Returns(grabs.ToList());
+        }
+
+        private void GivenBook(int bookId, string title)
+        {
+            Mocker.GetMock<IBookService>()
+                .Setup(s => s.GetBook(bookId))
+                .Returns(new Book { Id = bookId, Title = title });
+        }
+
+        private IdentificationOverrides ProcessAndCaptureOverrides()
+        {
+            IdentificationOverrides capturedOverrides = null;
+
+            Mocker.GetMock<IMakeImportDecision>()
+                .Setup(v => v.GetImportDecisions(It.IsAny<List<IFileInfo>>(), It.IsAny<IdentificationOverrides>(), It.IsAny<ImportDecisionMakerInfo>(), It.IsAny<ImportDecisionMakerConfig>()))
+                .Callback<List<IFileInfo>, IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((files, idOverrides, info, config) => capturedOverrides = idOverrides)
+                .Returns(new List<ImportDecision<LocalBook>>());
+
+            Mocker.GetMock<IImportApprovedBooks>()
+                .Setup(s => s.Import(It.IsAny<List<ImportDecision<LocalBook>>>(), It.IsAny<bool>(), It.IsAny<DownloadClientItem>(), It.IsAny<ImportMode>()))
+                .Returns(new List<ImportResult>());
+
+            Subject.ProcessPath(_droneFactory, ImportMode.Auto, _trackedDownload.RemoteBook.Author, _trackedDownload.DownloadItem);
+
+            return capturedOverrides;
+        }
+
+        [Test]
+        public void should_apply_grab_history_book_when_current_title_matches()
+        {
+            GivenBook(42, "Dark Operator");
+            GivenGrabHistory(GrabbedRow(42, DateTime.UtcNow));
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Dark Operator (2019) [FLAC]";
+
+            var capturedOverrides = ProcessAndCaptureOverrides();
+
+            capturedOverrides.Book.Should().NotBeNull();
+            capturedOverrides.Book.Id.Should().Be(42);
+        }
+
+        [Test]
+        public void should_skip_grab_history_book_when_reused_download_title_names_another_book()
+        {
+            GivenBook(42, "Dark Operator");
+            GivenGrabHistory(GrabbedRow(42, DateTime.UtcNow));
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Forgotten Ruin (2019) [FLAC]";
+
+            var capturedOverrides = ProcessAndCaptureOverrides();
+
+            capturedOverrides.Book.Should().BeNull();
+        }
+
+        [Test]
+        public void should_skip_grab_history_book_when_grab_names_several_books()
+        {
+            var now = DateTime.UtcNow;
+
+            GivenBook(42, "Dark Operator");
+            GivenGrabHistory(GrabbedRow(43, now), GrabbedRow(42, now.AddMilliseconds(-2)));
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Dark Operator (2019) [FLAC]";
+
+            var capturedOverrides = ProcessAndCaptureOverrides();
+
+            capturedOverrides.Book.Should().BeNull();
+        }
+
+        [Test]
+        public void should_use_only_the_latest_grab_when_download_was_grabbed_again()
+        {
+            var now = DateTime.UtcNow;
+
+            GivenBook(42, "Dark Operator");
+            GivenGrabHistory(GrabbedRow(42, now), GrabbedRow(43, now.AddHours(-2)));
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Dark Operator (2019) [FLAC]";
+
+            var capturedOverrides = ProcessAndCaptureOverrides();
+
+            capturedOverrides.Book.Should().NotBeNull();
+            capturedOverrides.Book.Id.Should().Be(42);
+        }
+
+        [Test]
+        public void should_skip_grab_history_book_when_it_was_deleted()
+        {
+            Mocker.GetMock<IBookService>()
+                .Setup(s => s.GetBook(42))
+                .Throws(new ModelNotFoundException(typeof(Book), 42));
+
+            GivenGrabHistory(GrabbedRow(42, DateTime.UtcNow));
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Dark Operator (2019) [FLAC]";
+
+            var capturedOverrides = ProcessAndCaptureOverrides();
+
+            capturedOverrides.Book.Should().BeNull();
         }
 
         private void VerifyNoImport()

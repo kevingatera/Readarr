@@ -148,6 +148,7 @@ namespace NzbDrone.Core.History
                     DownloadId = message.DownloadId
                 };
 
+                history.Data.Add(EntityHistory.GRAB_ID, message.GrabId);
                 history.Data.Add("Indexer", message.Book.Release.Indexer);
                 history.Data.Add("NzbInfoUrl", message.Book.Release.InfoUrl);
                 history.Data.Add("ReleaseGroup", message.Book.ParsedBookInfo.ReleaseGroup);
