@@ -1,8 +1,10 @@
 using System;
 using System.IO;
 using FizzWare.NBuilder;
+using FluentAssertions;
 using Moq;
 using NUnit.Framework;
+using NzbDrone.Common.Crypto;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Books;
@@ -118,6 +120,103 @@ namespace NzbDrone.Core.Test.MediaFiles.TrackFileMovingServiceTests
             Mocker.GetMock<IEventAggregator>()
                   .Verify(s => s.PublishEvent<TrackFolderCreatedEvent>(It.Is<TrackFolderCreatedEvent>(p =>
                       p.AuthorFolder.IsNotNullOrWhiteSpace())), Times.Never());
+        }
+
+        [Test]
+        public void should_adopt_untracked_destination_with_identical_content_and_remove_move_source()
+        {
+            var destinationPath = @"C:\Test\Music\Author\Book\File Name.mp3".AsOsAgnostic();
+            var sourcePath = _trackFile.Path;
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Setup(s => s.FileExists(destinationPath))
+                  .Returns(true);
+
+            Mocker.GetMock<IMediaFileService>()
+                  .Setup(s => s.GetFileWithPath(destinationPath))
+                  .Returns((BookFile)null);
+
+            Mocker.GetMock<IHashProvider>()
+                  .Setup(s => s.ComputeMd5(It.IsAny<string>()))
+                  .Returns(new byte[] { 1, 2, 3 });
+
+            var result = Subject.MoveBookFile(_trackFile, _localtrack);
+
+            result.Path.Should().Be(destinationPath);
+
+            Mocker.GetMock<IDiskTransferService>()
+                  .Verify(v => v.TransferFile(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TransferMode>(), It.IsAny<bool>()), Times.Never());
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Verify(v => v.DeleteFile(sourcePath), Times.Once());
+
+            Mocker.GetMock<IUpdateBookFileService>()
+                  .Verify(v => v.ChangeFileDateForFile(result, _author, _localtrack.Book), Times.Once());
+        }
+
+        [Test]
+        public void should_throw_and_keep_tracked_binding_when_destination_is_already_tracked()
+        {
+            var destinationPath = @"C:\Test\Music\Author\Book\File Name.mp3".AsOsAgnostic();
+            var trackedDestination = Builder<BookFile>.CreateNew()
+                .With(x => x.Id = 42)
+                .With(x => x.Path = destinationPath)
+                .With(x => x.EditionId = 999)
+                .Build();
+
+            _trackFile.EditionId = 12;
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Setup(s => s.FileExists(destinationPath))
+                  .Returns(true);
+
+            Mocker.GetMock<IMediaFileService>()
+                  .Setup(s => s.GetFileWithPath(destinationPath))
+                  .Returns(trackedDestination);
+
+            Subject.Invoking(s => s.MoveBookFile(_trackFile, _localtrack))
+                   .Should().Throw<DestinationAlreadyExistsException>();
+
+            Mocker.GetMock<IMediaFileService>()
+                  .Verify(v => v.Delete(It.IsAny<BookFile>(), It.IsAny<DeleteMediaFileReason>()), Times.Never());
+
+            Mocker.GetMock<IDiskTransferService>()
+                  .Verify(v => v.TransferFile(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TransferMode>(), It.IsAny<bool>()), Times.Never());
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Verify(v => v.DeleteFile(It.IsAny<string>()), Times.Never());
+        }
+
+        [Test]
+        public void should_throw_when_untracked_destination_has_different_content()
+        {
+            var destinationPath = @"C:\Test\Music\Author\Book\File Name.mp3".AsOsAgnostic();
+            var sourcePath = _trackFile.Path;
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Setup(s => s.FileExists(destinationPath))
+                  .Returns(true);
+
+            Mocker.GetMock<IMediaFileService>()
+                  .Setup(s => s.GetFileWithPath(destinationPath))
+                  .Returns((BookFile)null);
+
+            Mocker.GetMock<IHashProvider>()
+                  .Setup(s => s.ComputeMd5(sourcePath))
+                  .Returns(new byte[] { 1, 2, 3 });
+
+            Mocker.GetMock<IHashProvider>()
+                  .Setup(s => s.ComputeMd5(destinationPath))
+                  .Returns(new byte[] { 9, 9, 9 });
+
+            Subject.Invoking(s => s.MoveBookFile(_trackFile, _localtrack))
+                   .Should().Throw<DestinationAlreadyExistsException>();
+
+            Mocker.GetMock<IDiskTransferService>()
+                  .Verify(v => v.TransferFile(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TransferMode>(), It.IsAny<bool>()), Times.Never());
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Verify(v => v.DeleteFile(It.IsAny<string>()), Times.Never());
         }
     }
 }
