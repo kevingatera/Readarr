@@ -108,7 +108,28 @@ namespace NzbDrone.Core.Books
                 newbook.AuthorMetadataId = book.AuthorMetadataId;
                 newbook.AuthorMetadata.Value.Id = book.AuthorMetadataId;
 
-                author.Books = new List<Book> { newbook };
+                var remoteBooks = author.Books?.Value?.Where(x => x != null).ToList() ?? new List<Book>();
+                var existing = remoteBooks.FindIndex(x => x.ForeignBookId == newbook.ForeignBookId);
+
+                if (existing >= 0)
+                {
+                    remoteBooks[existing] = newbook;
+                }
+                else
+                {
+                    remoteBooks.Add(newbook);
+                }
+
+                author.Books = remoteBooks;
+
+                foreach (var remoteBook in author.Books.Value)
+                {
+                    remoteBook.Author = author;
+                    remoteBook.AuthorMetadata = author.Metadata.Value;
+                    remoteBook.AuthorMetadataId = book.AuthorMetadataId;
+                    remoteBook.AuthorMetadata.Value.Id = book.AuthorMetadataId;
+                }
+
                 return author;
             }
             catch (BookNotFoundException)
@@ -123,7 +144,7 @@ namespace NzbDrone.Core.Books
         {
             var result = new RemoteData();
 
-            var book = remote.SingleOrDefault(x => x.ForeignBookId == local.ForeignBookId);
+            var book = EquivalentBookMergeHelper.FindMatchingRemoteBook(local, remote);
 
             // Listed in the unfiltered payload but not the filtered one: the metadata profile
             // removed it on purpose, so the normal delete rules decide without a lookup.
@@ -135,7 +156,7 @@ namespace NzbDrone.Core.Books
             if (book == null && !profileFiltered)
             {
                 data = GetSkyhookData(local);
-                book = data?.Books?.Value?.SingleOrDefault(x => x.ForeignBookId == local.ForeignBookId);
+                book = EquivalentBookMergeHelper.FindMatchingRemoteBook(local, data?.Books?.Value);
             }
 
             result.Entity = book;

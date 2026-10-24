@@ -45,6 +45,7 @@ namespace NzbDrone.Core.Test.IndexerSearchTests
 
             var edition = Builder<Edition>.CreateNew()
                 .With(e => e.Book = _firstBook)
+                .With(e => e.Title = "All Systems Red")
                 .With(e => e.Monitored = true)
                 .Build();
 
@@ -162,6 +163,20 @@ namespace NzbDrone.Core.Test.IndexerSearchTests
             var criteria = allCriteria.OfType<BookSearchCriteria>().ToList();
 
             criteria.Count.Should().Be(0);
+        }
+
+        [Test]
+        public async Task should_not_throw_when_book_has_no_monitored_edition()
+        {
+            _firstBook.Title = "All Systems Red";
+            _firstBook.Editions.Value.ForEach(x => x.Monitored = false);
+
+            var allCriteria = WatchForSearchCriteria();
+
+            await Subject.BookSearch(_firstBook, false, true, false);
+
+            var criteria = allCriteria.OfType<BookSearchCriteria>().Single();
+            criteria.BookTitle.Should().Be("All Systems Red");
         }
     }
 }
