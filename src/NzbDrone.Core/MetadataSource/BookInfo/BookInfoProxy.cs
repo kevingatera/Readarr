@@ -28,7 +28,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
         private static readonly JsonSerializerOptions SerializerSettings = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = false,
-            Converters = { new STJUtcConverter() }
+            Converters = { new BookInfoDateConverter() }
         };
 
         private readonly IHttpClient _httpClient;
@@ -506,7 +506,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
 
             var idStr = ids.Select(x => x.ToString()).ToList();
 
-            return mapped.OrderBy(b => idStr.IndexOf(b.Editions.Value.First().ForeignEditionId)).ToList();
+            return mapped.OrderBy(b => idStr.IndexOf(b.Editions.Value.FirstOrDefault()?.ForeignEditionId)).ToList();
         }
 
         private List<Book> MapBulkBook(BulkBookResource resource)
@@ -518,20 +518,32 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 return books;
             }
 
-            var authors = resource.Authors.Select(MapAuthorMetadata).ToDictionary(x => x.ForeignAuthorId, x => x);
-            var series = resource.Series.Select(MapSeries).ToList();
+            var resourceAuthors = resource.Authors ?? new List<AuthorResource>();
+            var resourceSeries = resource.Series ?? new List<SeriesResource>();
 
-            foreach (var work in resource.Works)
+            var authors = resourceAuthors.Select(MapAuthorMetadata).ToDictionary(x => x.ForeignAuthorId, x => x);
+            var series = resourceSeries.Select(MapSeries).ToList();
+
+            foreach (var work in resource.Works ?? new List<WorkResource>())
             {
-                var book = MapBook(work);
-                var authorId = work.Books.OrderByDescending(b => b.AverageRating * b.RatingCount).First().Contributors.First().ForeignId.ToString();
+                var authorId = GetAuthorId(work);
 
-                AddDbIds(authorId, book, authors);
+                // A work with no author cannot be attached to a result. Skip it so one sparse
+                // work does not discard the whole search.
+                if (authorId == 0)
+                {
+                    _logger.Debug("Skipping work {0} from bulk search: no author information", work.ForeignId);
+                    continue;
+                }
+
+                var book = MapBook(work);
+
+                AddDbIds(authorId.ToString(), book, MergeAuthorMetadata(authors, work.Authors));
 
                 books.Add(book);
             }
 
-            MapSeriesLinks(series, books, resource.Series);
+            MapSeriesLinks(series, books, resourceSeries);
 
             return books;
         }
@@ -806,7 +818,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
             var metadata = MapAuthorMetadata(resource);
 
             var books = resource.Works
-                .Where(x => x.ForeignId > 0 && GetAuthorId(x) == resource.ForeignId)
+                .Where(x => x.ForeignId > 0 && GetAuthorIds(x).Contains(resource.ForeignId))
                 .Select(MapBook)
                 .ToList();
 
@@ -879,7 +891,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 Title = resource.Title,
                 TitleSlug = resource.ForeignId.ToString(),
                 CleanTitle = Parser.Parser.CleanAuthorName(resource.Title),
-                ReleaseDate = resource.ReleaseDate,
+                ReleaseDate = NormalizeDate(resource.ReleaseDate),
                 Genres = resource.Genres,
                 RelatedBooks = resource.RelatedWorks
             };
@@ -967,7 +979,7 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
                 Disambiguation = resource.EditionInformation,
                 Publisher = resource.Publisher,
                 PageCount = resource.NumPages ?? 0,
-                ReleaseDate = resource.ReleaseDate,
+                ReleaseDate = NormalizeDate(resource.ReleaseDate),
                 Ratings = new Ratings { Votes = resource.RatingCount, Value = (decimal)resource.AverageRating }
             };
 
@@ -987,7 +999,90 @@ namespace NzbDrone.Core.MetadataSource.BookInfo
 
         private static int GetAuthorId(WorkResource b)
         {
-            return b.Books.OrderByDescending(x => x.RatingCount * x.AverageRating).FirstOrDefault(x => x.Contributors.Any())?.Contributors.First().ForeignId ?? 0;
+            return GetAuthorIds(b).FirstOrDefault();
+        }
+
+        private static DateTime? NormalizeDate(DateTime? value)
+        {
+            if (!value.HasValue || value.Value == default(DateTime))
+            {
+                return null;
+            }
+
+            return value;
+        }
+
+        private static Dictionary<string, AuthorMetadata> MergeAuthorMetadata(
+            Dictionary<string, AuthorMetadata> authors,
+            List<AuthorResource> workAuthors)
+        {
+            if (workAuthors == null || !workAuthors.Any())
+            {
+                return authors;
+            }
+
+            var merged = authors;
+
+            foreach (var author in workAuthors.Where(x => x != null && x.ForeignId > 0))
+            {
+                var key = author.ForeignId.ToString();
+
+                if (merged.ContainsKey(key))
+                {
+                    continue;
+                }
+
+                if (ReferenceEquals(merged, authors))
+                {
+                    merged = new Dictionary<string, AuthorMetadata>(authors);
+                }
+
+                merged[key] = MapAuthorMetadata(author);
+            }
+
+            return merged;
+        }
+
+        private static List<int> GetAuthorIds(WorkResource resource)
+        {
+            if (resource == null)
+            {
+                return new List<int>();
+            }
+
+            var authorContributorIds = resource.Books?
+                .Where(x => x != null)
+                .OrderByDescending(x => x.RatingCount * x.AverageRating)
+                .SelectMany(x => x.Contributors ?? new List<ContributorResource>())
+                .Where(x => x != null && x.ForeignId > 0 && string.Equals(x.Role, "Author", StringComparison.OrdinalIgnoreCase))
+                .Select(x => x.ForeignId)
+                .Distinct()
+                .ToList() ?? new List<int>();
+
+            if (authorContributorIds.Any())
+            {
+                return authorContributorIds;
+            }
+
+            var workAuthorIds = resource.Authors?
+                .Where(x => x != null && x.ForeignId > 0)
+                .Select(x => x.ForeignId)
+                .Distinct()
+                .ToList() ?? new List<int>();
+
+            if (workAuthorIds.Any())
+            {
+                return workAuthorIds;
+            }
+
+            return resource.Books?
+                .Where(x => x != null)
+                .OrderByDescending(x => x.RatingCount * x.AverageRating)
+                .SelectMany(x => x.Contributors ?? new List<ContributorResource>())
+                .Where(x => x != null && x.ForeignId > 0)
+                .Select(x => x.ForeignId)
+                .Distinct()
+                .ToList() ?? new List<int>();
         }
     }
 }
