@@ -129,7 +129,7 @@ namespace Readarr.Api.V1.Books
                 }
             }
 
-            return MapToResource(_bookService.GetBooks(bookIds), false);
+            return MapToResource(_bookService.GetExistingBooks(bookIds), false);
         }
 
         // Fallback path for legacy clients and full library fetch
