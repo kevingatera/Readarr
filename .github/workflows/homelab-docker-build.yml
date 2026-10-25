@@ -1,0 +1,74 @@
+name: Homelab Docker Build
+
+on:
+  push:
+    branches:
+      - homelab
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Homelab Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ghcr.io/kevingatera/readarr:homelab
+            ghcr.io/kevingatera/readarr:homelab-${{ github.sha }}
+          build-args: |
+            VERSION=0.9.0.1
+            VENDOR=kevingatera
+            BRANCH=homelab
+          labels: |
+            org.opencontainers.image.source=https://github.com/kevingatera/Readarr
+            org.opencontainers.image.version=homelab
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Export Homelab Image Archive
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          platforms: linux/amd64
+          tags: ghcr.io/kevingatera/readarr:homelab
+          build-args: |
+            VERSION=0.9.0.1
+            VENDOR=kevingatera
+            BRANCH=homelab
+          outputs: type=docker,dest=/tmp/readarr-homelab.tar
+
+      - name: Compress Homelab Image Archive
+        run: gzip -f /tmp/readarr-homelab.tar
+
+      - name: Upload Homelab Image Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: readarr-homelab-docker-archive
+          path: /tmp/readarr-homelab.tar.gz
+          retention-days: 2
