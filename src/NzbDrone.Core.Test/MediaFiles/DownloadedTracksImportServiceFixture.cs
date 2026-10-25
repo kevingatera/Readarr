@@ -10,6 +10,7 @@ using Moq;
 using NUnit.Framework;
 using NzbDrone.Common.Disk;
 using NzbDrone.Core.Books;
+using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.History;
@@ -337,33 +338,33 @@ namespace NzbDrone.Core.Test.MediaFiles
             DiskProvider.FolderExists(_subFolders[0]).Should().BeTrue();
         }
 
-        [Test]
-        public void should_apply_history_book_override_when_grabbed_title_matches()
+        private static EntityHistory GrabbedRow(int bookId, DateTime date)
         {
-            var historyBook = new Book
+            return new EntityHistory
             {
-                Id = 42,
-                Title = "Dark Operator",
-                Author = null
+                EventType = EntityHistoryEventType.Grabbed,
+                BookId = bookId,
+                Date = date,
+                SourceTitle = "Nick Cole - Dark Operator [FLAC]"
             };
+        }
 
-            _trackedDownload.DownloadItem.Title = "01 Dark Operator";
-
+        private void GivenGrabHistory(params EntityHistory[] grabs)
+        {
             Mocker.GetMock<IHistoryService>()
                 .Setup(s => s.Find(_trackedDownload.DownloadItem.DownloadId, EntityHistoryEventType.Grabbed))
-                .Returns(new List<EntityHistory>
-                {
-                    new EntityHistory
-                    {
-                        BookId = 42,
-                        SourceTitle = "Dark Operator by Nick Cole, Jason Anspach"
-                    }
-                });
+                .Returns(grabs.ToList());
+        }
 
+        private void GivenBook(int bookId, string title)
+        {
             Mocker.GetMock<IBookService>()
-                .Setup(s => s.GetBook(42))
-                .Returns(historyBook);
+                .Setup(s => s.GetBook(bookId))
+                .Returns(new Book { Id = bookId, Title = title });
+        }
 
+        private IdentificationOverrides ProcessAndCaptureOverrides()
+        {
             IdentificationOverrides capturedOverrides = null;
 
             Mocker.GetMock<IMakeImportDecision>()
@@ -377,61 +378,34 @@ namespace NzbDrone.Core.Test.MediaFiles
 
             Subject.ProcessPath(_droneFactory, ImportMode.Auto, _trackedDownload.RemoteBook.Author, _trackedDownload.DownloadItem);
 
-            capturedOverrides.Should().NotBeNull();
+            return capturedOverrides;
+        }
+
+        [Test]
+        public void should_apply_grab_history_book_when_current_title_matches()
+        {
+            GivenBook(42, "Dark Operator");
+            GivenGrabHistory(GrabbedRow(42, DateTime.UtcNow));
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Dark Operator (2019) [FLAC]";
+
+            var capturedOverrides = ProcessAndCaptureOverrides();
+
             capturedOverrides.Book.Should().NotBeNull();
             capturedOverrides.Book.Id.Should().Be(42);
         }
 
         [Test]
-        public void should_use_most_recent_history_book_override_when_download_was_grabbed_for_duplicate_books()
+        public void should_pass_grab_title_to_identification_when_grab_book_is_applied()
         {
-            var oldDuplicateBook = new Book
-            {
-                Id = 42,
-                Title = "The Only Girl Left Alive",
-                Author = null
-            };
+            GivenBook(42, "Dark Operator");
+            GivenGrabHistory(GrabbedRow(42, DateTime.UtcNow));
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Dark Operator (2019) [FLAC]";
 
-            var currentBook = new Book
-            {
-                Id = 43,
-                Title = "The Only Girl Left Alive",
-                Author = null
-            };
-
-            _trackedDownload.DownloadItem.Title = "Susan Lund - The Only Girl Left Alive The McClintock-Carter Crime Thriller Trilogy, Book Three";
-
-            Mocker.GetMock<IHistoryService>()
-                .Setup(s => s.Find(_trackedDownload.DownloadItem.DownloadId, EntityHistoryEventType.Grabbed))
-                .Returns(new List<EntityHistory>
-                {
-                    new EntityHistory
-                    {
-                        BookId = oldDuplicateBook.Id,
-                        SourceTitle = "The Only Girl Left Alive by Susan Lund",
-                        Date = new DateTime(2026, 3, 15)
-                    },
-                    new EntityHistory
-                    {
-                        BookId = currentBook.Id,
-                        SourceTitle = "The Only Girl Left Alive by Susan Lund",
-                        Date = new DateTime(2026, 5, 1)
-                    }
-                });
-
-            Mocker.GetMock<IBookService>()
-                .Setup(s => s.GetBook(oldDuplicateBook.Id))
-                .Returns(oldDuplicateBook);
-
-            Mocker.GetMock<IBookService>()
-                .Setup(s => s.GetBook(currentBook.Id))
-                .Returns(currentBook);
-
-            IdentificationOverrides capturedOverrides = null;
+            ImportDecisionMakerInfo capturedInfo = null;
 
             Mocker.GetMock<IMakeImportDecision>()
                 .Setup(v => v.GetImportDecisions(It.IsAny<List<IFileInfo>>(), It.IsAny<IdentificationOverrides>(), It.IsAny<ImportDecisionMakerInfo>(), It.IsAny<ImportDecisionMakerConfig>()))
-                .Callback<List<IFileInfo>, IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((files, idOverrides, info, config) => capturedOverrides = idOverrides)
+                .Callback<List<IFileInfo>, IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((files, idOverrides, info, config) => capturedInfo = info)
                 .Returns(new List<ImportDecision<LocalBook>>());
 
             Mocker.GetMock<IImportApprovedBooks>()
@@ -440,150 +414,104 @@ namespace NzbDrone.Core.Test.MediaFiles
 
             Subject.ProcessPath(_droneFactory, ImportMode.Auto, _trackedDownload.RemoteBook.Author, _trackedDownload.DownloadItem);
 
-            capturedOverrides.Should().NotBeNull();
-            capturedOverrides.Book.Should().NotBeNull();
-            capturedOverrides.Book.Id.Should().Be(currentBook.Id);
+            capturedInfo.Should().NotBeNull();
+            capturedInfo.HistoryBookInfo.Should().NotBeNull();
+            capturedInfo.HistoryBookInfo.BookTitle.Should().Contain("Dark Operator");
         }
 
         [Test]
-        public void should_skip_history_book_override_when_title_does_not_match()
+        public void should_not_apply_older_grab_book_when_latest_grab_names_several_books()
         {
-            var historyBook = new Book
-            {
-                Id = 43,
-                Title = "Forgotten Ruin",
-                Author = null
-            };
+            GivenBook(42, "Dark Operator");
+            GivenBook(43, "Some Other Book");
+            GivenBook(44, "Another Book");
 
-            _trackedDownload.DownloadItem.Title = "01 The Bold";
+            var latest = DateTime.UtcNow;
 
-            Mocker.GetMock<IHistoryService>()
-                .Setup(s => s.Find(_trackedDownload.DownloadItem.DownloadId, EntityHistoryEventType.Grabbed))
-                .Returns(new List<EntityHistory>
+            GivenGrabHistory(
+                new EntityHistory
                 {
-                    new EntityHistory
-                    {
-                        BookId = 43,
-                        SourceTitle = "The Bold by Nick Cole, Jason Anspach"
-                    }
+                    EventType = EntityHistoryEventType.Grabbed,
+                    BookId = 42,
+                    Date = latest.AddDays(-30),
+                    SourceTitle = "Nick Cole - Dark Operator [FLAC]"
+                },
+                new EntityHistory
+                {
+                    EventType = EntityHistoryEventType.Grabbed,
+                    BookId = 43,
+                    Date = latest,
+                    SourceTitle = "Someone - Some Other Book [FLAC]"
+                },
+                new EntityHistory
+                {
+                    EventType = EntityHistoryEventType.Grabbed,
+                    BookId = 44,
+                    Date = latest,
+                    SourceTitle = "Someone - Another Book [FLAC]"
                 });
 
-            Mocker.GetMock<IBookService>()
-                .Setup(s => s.GetBook(43))
-                .Returns(historyBook);
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Dark Operator (2019) [FLAC]";
 
-            IdentificationOverrides capturedOverrides = null;
+            var capturedOverrides = ProcessAndCaptureOverrides();
 
-            Mocker.GetMock<IMakeImportDecision>()
-                .Setup(v => v.GetImportDecisions(It.IsAny<List<IFileInfo>>(), It.IsAny<IdentificationOverrides>(), It.IsAny<ImportDecisionMakerInfo>(), It.IsAny<ImportDecisionMakerConfig>()))
-                .Callback<List<IFileInfo>, IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((files, idOverrides, info, config) => capturedOverrides = idOverrides)
-                .Returns(new List<ImportDecision<LocalBook>>());
-
-            Mocker.GetMock<IImportApprovedBooks>()
-                .Setup(s => s.Import(It.IsAny<List<ImportDecision<LocalBook>>>(), It.IsAny<bool>(), It.IsAny<DownloadClientItem>(), It.IsAny<ImportMode>()))
-                .Returns(new List<ImportResult>());
-
-            Subject.ProcessPath(_droneFactory, ImportMode.Auto, _trackedDownload.RemoteBook.Author, _trackedDownload.DownloadItem);
-
-            capturedOverrides.Should().NotBeNull();
             capturedOverrides.Book.Should().BeNull();
         }
 
         [Test]
-        public void should_skip_history_book_override_for_partial_substring_title_match()
+        public void should_skip_grab_history_book_when_reused_download_title_names_another_book()
         {
-            var historyBook = new Book
-            {
-                Id = 44,
-                Title = "Legionnaire",
-                Author = null
-            };
+            GivenBook(42, "Dark Operator");
+            GivenGrabHistory(GrabbedRow(42, DateTime.UtcNow));
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Forgotten Ruin (2019) [FLAC]";
 
-            _trackedDownload.DownloadItem.Title = "02 Gods & Legionnaires";
+            var capturedOverrides = ProcessAndCaptureOverrides();
 
-            Mocker.GetMock<IHistoryService>()
-                .Setup(s => s.Find(_trackedDownload.DownloadItem.DownloadId, EntityHistoryEventType.Grabbed))
-                .Returns(new List<EntityHistory>
-                {
-                    new EntityHistory
-                    {
-                        BookId = 44,
-                        SourceTitle = "Gods & Legionnaires by Nick Cole, Jason Anspach"
-                    }
-                });
-
-            Mocker.GetMock<IBookService>()
-                .Setup(s => s.GetBook(44))
-                .Returns(historyBook);
-
-            IdentificationOverrides capturedOverrides = null;
-
-            Mocker.GetMock<IMakeImportDecision>()
-                .Setup(v => v.GetImportDecisions(It.IsAny<List<IFileInfo>>(), It.IsAny<IdentificationOverrides>(), It.IsAny<ImportDecisionMakerInfo>(), It.IsAny<ImportDecisionMakerConfig>()))
-                .Callback<List<IFileInfo>, IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((files, idOverrides, info, config) => capturedOverrides = idOverrides)
-                .Returns(new List<ImportDecision<LocalBook>>());
-
-            Mocker.GetMock<IImportApprovedBooks>()
-                .Setup(s => s.Import(It.IsAny<List<ImportDecision<LocalBook>>>(), It.IsAny<bool>(), It.IsAny<DownloadClientItem>(), It.IsAny<ImportMode>()))
-                .Returns(new List<ImportResult>());
-
-            Subject.ProcessPath(_droneFactory, ImportMode.Auto, _trackedDownload.RemoteBook.Author, _trackedDownload.DownloadItem);
-
-            capturedOverrides.Should().NotBeNull();
             capturedOverrides.Book.Should().BeNull();
         }
 
         [Test]
-        public void should_apply_history_book_override_when_embedded_title_matches()
+        public void should_skip_grab_history_book_when_grab_names_several_books()
         {
-            var historyBook = new Book
-            {
-                Id = 45,
-                Title = "Forgotten Ruin",
-                Author = null
-            };
+            var now = DateTime.UtcNow;
 
-            _trackedDownload.DownloadItem.Title = "01 The Bold";
+            GivenBook(42, "Dark Operator");
+            GivenGrabHistory(GrabbedRow(43, now), GrabbedRow(42, now.AddMilliseconds(-2)));
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Dark Operator (2019) [FLAC]";
 
-            Mocker.GetMock<IHistoryService>()
-                .Setup(s => s.Find(_trackedDownload.DownloadItem.DownloadId, EntityHistoryEventType.Grabbed))
-                .Returns(new List<EntityHistory>
-                {
-                    new EntityHistory
-                    {
-                        BookId = 45,
-                        SourceTitle = "The Bold by Nick Cole, Jason Anspach"
-                    }
-                });
+            var capturedOverrides = ProcessAndCaptureOverrides();
 
-            Mocker.GetMock<IBookService>()
-                .Setup(s => s.GetBook(45))
-                .Returns(historyBook);
+            capturedOverrides.Book.Should().BeNull();
+        }
 
-            Mocker.GetMock<IMetadataTagService>()
-                .Setup(s => s.ReadTags(It.IsAny<IFileInfo>()))
-                .Returns(new ParsedTrackInfo
-                {
-                    Title = "Forgotten Ruin",
-                    BookTitle = "01 Forgotten Ruin"
-                });
+        [Test]
+        public void should_use_only_the_latest_grab_when_download_was_grabbed_again()
+        {
+            var now = DateTime.UtcNow;
 
-            IdentificationOverrides capturedOverrides = null;
+            GivenBook(42, "Dark Operator");
+            GivenGrabHistory(GrabbedRow(42, now), GrabbedRow(43, now.AddHours(-2)));
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Dark Operator (2019) [FLAC]";
 
-            Mocker.GetMock<IMakeImportDecision>()
-                .Setup(v => v.GetImportDecisions(It.IsAny<List<IFileInfo>>(), It.IsAny<IdentificationOverrides>(), It.IsAny<ImportDecisionMakerInfo>(), It.IsAny<ImportDecisionMakerConfig>()))
-                .Callback<List<IFileInfo>, IdentificationOverrides, ImportDecisionMakerInfo, ImportDecisionMakerConfig>((files, idOverrides, info, config) => capturedOverrides = idOverrides)
-                .Returns(new List<ImportDecision<LocalBook>>());
+            var capturedOverrides = ProcessAndCaptureOverrides();
 
-            Mocker.GetMock<IImportApprovedBooks>()
-                .Setup(s => s.Import(It.IsAny<List<ImportDecision<LocalBook>>>(), It.IsAny<bool>(), It.IsAny<DownloadClientItem>(), It.IsAny<ImportMode>()))
-                .Returns(new List<ImportResult>());
-
-            Subject.ProcessPath(_droneFactory, ImportMode.Auto, _trackedDownload.RemoteBook.Author, _trackedDownload.DownloadItem);
-
-            capturedOverrides.Should().NotBeNull();
             capturedOverrides.Book.Should().NotBeNull();
-            capturedOverrides.Book.Id.Should().Be(45);
+            capturedOverrides.Book.Id.Should().Be(42);
+        }
+
+        [Test]
+        public void should_skip_grab_history_book_when_it_was_deleted()
+        {
+            Mocker.GetMock<IBookService>()
+                .Setup(s => s.GetBook(42))
+                .Throws(new ModelNotFoundException(typeof(Book), 42));
+
+            GivenGrabHistory(GrabbedRow(42, DateTime.UtcNow));
+            _trackedDownload.DownloadItem.Title = "Nick Cole - Dark Operator (2019) [FLAC]";
+
+            var capturedOverrides = ProcessAndCaptureOverrides();
+
+            capturedOverrides.Book.Should().BeNull();
         }
 
         private void VerifyNoImport()

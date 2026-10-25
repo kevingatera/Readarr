@@ -17,7 +17,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
 {
     public static class DistanceCalculator
     {
-        private const double IgnoreFormatPenaltyThreshold = 0.20;
+        private const double TitleSourceAgreeThreshold = 0.20;
+        private const double TitleSourceConflictThreshold = 0.50;
         private static readonly Logger Logger = NzbDroneLogger.GetLogger(typeof(DistanceCalculator));
 
         public static readonly List<string> VariousAuthorIds = new List<string> { "89ad4ac3-39f7-470e-963a-56509c546377" };
@@ -27,11 +28,16 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
         private static readonly RegexReplace CleanTitleCruft = new RegexReplace(@"\((?:unabridged)\)|,?\s*(?:\([^)]*edition[^)]*\)|(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)?)\s+edition)$", string.Empty, RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly RegexReplace LeadingPartNumber = new RegexReplace(@"^\s*(?:(?:book|part|pt|chapter|disc|cd|track)\s*)?(?:\d+|[ivxlcdm]+)\s*[-._:)]*\s+", string.Empty, RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        private static readonly Regex SeriesPartRegex = new Regex(@"\b(?:book|part|pt)\s*(?<number>\d+(?:\.\d+)?|[ivxlcdm]+)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        private static readonly Regex LeadingPartRegex = new Regex(@"^\s*(?:(?:book|part|pt|chapter|disc|cd|track)\s*)?(?<number>\d+(?:\.\d+)?|[ivxlcdm]+)\s*[-._:)]*\s+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex CamelCaseBoundaryRegex = new Regex(@"(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])", RegexOptions.Compiled);
         private static readonly Regex AudioPartSuffixRegex = new Regex(@"\b(?:unabridged\s*)?(?:part|pt)\s*\d+\s*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex TrailingTrackPartRegex = new Regex(@"^(?<stem>.+?)\s+(?:part|pt)\s*(?<number>\d+)\s*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        // File names like "Track 01.mp3" or "Chapter 3" name a position in the book, not the book.
+        private static readonly Regex TrackOrChapterStemRegex = new Regex(@"^\s*(?:(?:track|chapter|ch|disc|disk|cd|part|pt)[\s._-]*\d+\b|\d{1,3}\s*$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        // A leading number followed by a separator, such as "01 - Opening Chapter". Only read as a track
+        // position when the import has several files, since a single file may be a titled book.
+        private static readonly Regex NumberedStemRegex = new Regex(@"^\s*\d{1,3}\s*[-._)]|^\s*\d{1,3}\s+\S", RegexOptions.Compiled);
 
         private static readonly List<string> EbookFormats = new List<string> { "Kindle Edition", "Nook", "ebook" };
 
@@ -94,10 +100,12 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             dist.AddString("book", fileTitles, titleOptions);
             Logger.Trace("book: '{0}' vs '{1}'; {2}", fileTitles.ConcatToString("' or '"), titleOptions.ConcatToString("' or '"), dist.NormalizedDistance());
 
-            var localPartNumbers = ParsePartNumbers(fileTitles);
+            AddTitleConflictPenalty(dist, localTracks, authors, titleOptions);
+
+            var localPartNumbers = SeriesPartParser.ParsePartNumbers(fileTitles);
             if (ShouldIgnoreSequentialTrackPartNumbers(localTracks))
             {
-                localPartNumbers = ParsePartNumbers(GetReleaseLevelTitleCandidates(localTracks));
+                localPartNumbers = SeriesPartParser.ParsePartNumbers(GetReleaseLevelTitleCandidates(localTracks));
             }
 
             var editionPartNumbers = GetEditionPartNumbers(edition);
@@ -197,34 +205,29 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
 
             // try to tilt it towards the correct "type" of release
             var isAudio = MediaFileExtensions.AudioExtensions.Contains(localTracks.First().Path.GetPathExtension());
-            var ignoreFormatPenalty = strongTitleMatch &&
-                                      (dist.NormalizedDistance() <= IgnoreFormatPenaltyThreshold ||
-                                       (isAudio && IsMetadataPoorAudio(localTracks) && shouldSoftenAuthorPenalty));
 
             if (edition.Format.IsNotNullOrWhiteSpace())
             {
                 if (!isAudio)
                 {
-                    if (ignoreFormatPenalty && AudiobookFormats.Contains(edition.Format))
-                    {
-                        Logger.Trace($"Skipping audiobook format penalties for close text match: {edition.Format}; {dist.NormalizedDistance()}");
-                    }
-                    else
-                    {
-                        // text books should prefer ebook formats
-                        dist.AddBool("ebook_format", !EbookFormats.Contains(edition.Format));
-                        Logger.Trace($"ebook_format: {edition.Format} - {!EbookFormats.Contains(edition.Format)}; {dist.NormalizedDistance()}");
+                    // text books should prefer ebook formats
+                    dist.AddBool("ebook_format", !EbookFormats.Contains(edition.Format));
+                    Logger.Trace($"ebook_format: {edition.Format} - {!EbookFormats.Contains(edition.Format)}; {dist.NormalizedDistance()}");
 
-                        // text books should not match audio entries
-                        dist.AddBool("wrong_format", AudiobookFormats.Contains(edition.Format));
-                        Logger.Trace($"wrong_format: {edition.Format} - {AudiobookFormats.Contains(edition.Format)}; {dist.NormalizedDistance()}");
-                    }
+                    // text books should not match audio entries
+                    dist.AddBool("wrong_format", AudiobookFormats.Contains(edition.Format));
+                    Logger.Trace($"wrong_format: {edition.Format} - {AudiobookFormats.Contains(edition.Format)}; {dist.NormalizedDistance()}");
                 }
                 else
                 {
-                    if (ignoreFormatPenalty && EbookFormats.Contains(edition.Format))
+                    // The only cross-format exception: an audio file with no identifiers and no usable
+                    // author tags may match an ebook edition on a strong title match. Other audio
+                    // matches keep the audio format preference.
+                    var ignoreEbookEditionPenalty = isAudio && strongTitleMatch && shouldSoftenAuthorPenalty && IsMetadataPoorAudio(localTracks);
+
+                    if (ignoreEbookEditionPenalty && EbookFormats.Contains(edition.Format))
                     {
-                        Logger.Trace($"Skipping ebook format penalties for close audio match: {edition.Format}; {dist.NormalizedDistance()}");
+                        Logger.Trace($"Skipping ebook format penalties for metadata-poor audio: {edition.Format}; {dist.NormalizedDistance()}");
                     }
                     else
                     {
@@ -311,6 +314,91 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             AddFromSeparator(" by ");
 
             return candidates;
+        }
+
+        // The best-matching title source can hide a source that names a different book.
+        // Tags, download info and the file name are scored separately; if one agrees with the
+        // edition and another clearly does not, the contradiction is penalized.
+        private static void AddTitleConflictPenalty(Distance dist, List<LocalBook> localTracks, List<string> authors, List<string> titleOptions)
+        {
+            var sources = GetTitleSources(localTracks, authors);
+
+            if (sources.Count < 2 || !titleOptions.Any())
+            {
+                return;
+            }
+
+            var sourceScores = sources
+                .Select(source => source.Min(v => titleOptions.Min(o => Distance.StringScore(v, o))))
+                .ToList();
+
+            if (sourceScores.Min() <= TitleSourceAgreeThreshold && sourceScores.Max() >= TitleSourceConflictThreshold)
+            {
+                dist.AddBool("book_conflict", true);
+                Logger.Trace("book_conflict: title sources {0} disagree; {1}", sourceScores.ConcatToString(", "), dist.NormalizedDistance());
+            }
+        }
+
+        private static List<List<string>> GetTitleSources(List<LocalBook> localTracks, List<string> authors)
+        {
+            // Swapped tags put an author name in a title field. That is not evidence about the title.
+            var authorKeys = authors.Select(TitleKey).ToHashSet();
+
+            var tagTitles = new List<string>
+            {
+                localTracks.MostCommon(x => x.FileTrackInfo.Title),
+                localTracks.MostCommon(x => x.FileTrackInfo.CleanTitle),
+                localTracks.MostCommon(x => x.FileTrackInfo.BookTitle)
+            };
+
+            var downloadTitles = new List<string>
+            {
+                localTracks.MostCommon(x => x.FolderTrackInfo?.BookTitle),
+                localTracks.MostCommon(x => x.DownloadClientBookInfo?.BookTitle)
+            };
+
+            // The parent folder is skipped because generic names such as "complete" are common.
+            // A track or chapter file name says where a file sits in the book, so it is not title evidence.
+            var fileNameTitle = GetFileNameTitleEvidence(localTracks);
+
+            return new List<List<string>> { tagTitles, downloadTitles, fileNameTitle }
+                .Select(group => group
+                    .Where(x => x.IsNotNullOrWhiteSpace())
+                    .SelectMany(ExpandTitleCandidates)
+                    .Where(x => x.IsNotNullOrWhiteSpace() && !authorKeys.Contains(TitleKey(x)))
+                    .ToList())
+                .Where(group => group.Any())
+                .ToList();
+        }
+
+        private static List<string> GetFileNameTitleEvidence(List<LocalBook> localTracks)
+        {
+            var stems = localTracks
+                .Select(x => Path.GetFileNameWithoutExtension(x.Path))
+                .Where(x => x.IsNotNullOrWhiteSpace())
+                .ToList();
+
+            if (!stems.Any())
+            {
+                return new List<string>();
+            }
+
+            // In a multi-file import, numbered names are track or chapter positions, not the book title.
+            if (localTracks.Count > 1 && stems.All(x => NumberedStemRegex.IsMatch(x)))
+            {
+                return new List<string>();
+            }
+
+            var stem = localTracks.MostCommon(x => Path.GetFileNameWithoutExtension(x.Path));
+
+            return stem.IsNotNullOrWhiteSpace() && !TrackOrChapterStemRegex.IsMatch(stem)
+                ? new List<string> { stem }
+                : new List<string>();
+        }
+
+        private static string TitleKey(string value)
+        {
+            return new string(value.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
         }
 
         private static List<string> GetTitleCandidates(List<LocalBook> localTracks)
@@ -405,7 +493,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
 
             AddTitleOption(titleOptions, $"{seriesName} Part {position}");
 
-            if (TryParseSeriesNumber(position, out var numericPosition))
+            if (SeriesPartParser.TryParseSeriesNumber(position, out var numericPosition))
             {
                 AddTitleOption(titleOptions, $"{seriesName} Part {numericPosition.ToString("0.###", CultureInfo.InvariantCulture)}");
 
@@ -430,54 +518,6 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             }
         }
 
-        private static bool TryParseSeriesNumber(string value, out double number)
-        {
-            number = 0;
-
-            if (value.IsNullOrWhiteSpace())
-            {
-                return false;
-            }
-
-            if (double.TryParse(value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out number))
-            {
-                return true;
-            }
-
-            var roman = RomanToInt(value);
-            if (roman > 0)
-            {
-                number = roman;
-                return true;
-            }
-
-            return false;
-        }
-
-        private static List<double> ParsePartNumbers(IEnumerable<string> titles)
-        {
-            var partNumbers = new List<double>();
-
-            foreach (var title in titles.Where(x => x.IsNotNullOrWhiteSpace()))
-            {
-                var leadingMatch = LeadingPartRegex.Match(title);
-                if (leadingMatch.Success && TryParseSeriesNumber(leadingMatch.Groups["number"].Value, out var leadingPart))
-                {
-                    AddPartIfUnique(partNumbers, leadingPart);
-                }
-
-                foreach (Match match in SeriesPartRegex.Matches(title))
-                {
-                    if (TryParseSeriesNumber(match.Groups["number"].Value, out var partNumber))
-                    {
-                        AddPartIfUnique(partNumbers, partNumber);
-                    }
-                }
-            }
-
-            return partNumbers;
-        }
-
         private static List<double> GetEditionPartNumbers(Edition edition)
         {
             var partNumbers = new List<double>();
@@ -491,12 +531,12 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             {
                 if (seriesLink.SeriesPosition > 0)
                 {
-                    AddPartIfUnique(partNumbers, seriesLink.SeriesPosition);
+                    SeriesPartParser.AddPartIfUnique(partNumbers, seriesLink.SeriesPosition);
                 }
 
-                if (TryParseSeriesNumber(seriesLink.Position, out var parsedPosition))
+                if (SeriesPartParser.TryParseSeriesNumber(seriesLink.Position, out var parsedPosition))
                 {
-                    AddPartIfUnique(partNumbers, parsedPosition);
+                    SeriesPartParser.AddPartIfUnique(partNumbers, parsedPosition);
                 }
             }
 
@@ -713,58 +753,6 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                 .Where(x => x.IsNotNullOrWhiteSpace())
                 .Distinct(StringComparer.InvariantCultureIgnoreCase)
                 .ToList();
-        }
-
-        private static void AddPartIfUnique(List<double> partNumbers, double value)
-        {
-            if (partNumbers.All(x => Math.Abs(x - value) > 0.01))
-            {
-                partNumbers.Add(value);
-            }
-        }
-
-        private static int RomanToInt(string value)
-        {
-            if (value.IsNullOrWhiteSpace())
-            {
-                return 0;
-            }
-
-            var roman = value.ToUpperInvariant();
-            var total = 0;
-            var last = 0;
-
-            for (var i = roman.Length - 1; i >= 0; i--)
-            {
-                var current = roman[i] switch
-                {
-                    'I' => 1,
-                    'V' => 5,
-                    'X' => 10,
-                    'L' => 50,
-                    'C' => 100,
-                    'D' => 500,
-                    'M' => 1000,
-                    _ => 0
-                };
-
-                if (current == 0)
-                {
-                    return 0;
-                }
-
-                if (current < last)
-                {
-                    total -= current;
-                }
-                else
-                {
-                    total += current;
-                    last = current;
-                }
-            }
-
-            return total;
         }
 
         private static string ToRoman(int value)

@@ -42,6 +42,38 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
         }
 
         [Test]
+        public void should_cap_fallback_searches_when_no_search_finds_a_book()
+        {
+            var searches = 0;
+
+            Mocker.GetMock<ISearchForNewBook>()
+                .Setup(s => s.SearchForNewBook(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>()))
+                .Callback(() => searches++)
+                .Returns(new List<Book>());
+
+            var edition = new LocalEdition
+            {
+                LocalBooks = new List<LocalBook>
+                {
+                    new LocalBook
+                    {
+                        FileTrackInfo = new ParsedTrackInfo
+                        {
+                            Authors = new List<string> { "Author One", "Author Two", "Author Three", "Author Four", "Author Five" },
+                            BookTitle = "First Book Title",
+                            Title = "Second Book Title"
+                        }
+                    }
+                }
+            };
+
+            Subject.GetRemoteCandidates(edition, null).Should().BeEmpty();
+
+            searches.Should().BeGreaterThan(0);
+            searches.Should().BeLessOrEqualTo(10);
+        }
+
+        [Test]
         public void should_use_folder_book_title_when_file_title_is_missing()
         {
             var author = new Author { AuthorMetadataId = 14 };

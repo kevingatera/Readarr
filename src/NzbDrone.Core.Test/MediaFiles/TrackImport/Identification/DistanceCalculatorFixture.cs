@@ -1,9 +1,12 @@
 using System.Collections.Generic;
+using System.Linq;
 using FluentAssertions;
+using NLog;
 using NUnit.Framework;
 using NzbDrone.Core.Books;
 using NzbDrone.Core.Datastore;
 using NzbDrone.Core.MediaFiles.BookImport.Identification;
+using NzbDrone.Core.MediaFiles.BookImport.Specifications;
 using NzbDrone.Core.Parser.Model;
 using NzbDrone.Test.Common;
 
@@ -328,7 +331,59 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
         }
 
         [Test]
-        public void should_ignore_ebook_format_penalties_for_close_audiobook_match()
+        public void should_penalize_tag_title_that_contradicts_file_name()
+        {
+            var dist = BookDistanceForTagAndFile("Correct Book", "/downloads/complete/Wrong Book.m4b");
+
+            dist.Reasons.Should().Contain("book conflict");
+            dist.NormalizedDistance().Should().BeGreaterThan(0.20);
+        }
+
+        [Test]
+        public void should_not_penalize_tag_title_that_agrees_with_file_name()
+        {
+            var dist = BookDistanceForTagAndFile("Correct Book", "/downloads/complete/Correct Book.m4b");
+
+            dist.Reasons.Should().NotContain("book conflict");
+            dist.NormalizedDistance().Should().BeLessThan(0.20);
+        }
+
+        private static Distance BookDistanceForTagAndFile(string tagTitle, string path)
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };
+
+            var book = new Book
+            {
+                Title = "Correct Book",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata)
+            };
+
+            var edition = new Edition
+            {
+                Title = "Correct Book",
+                Format = "Audiobook",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = path,
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = tagTitle,
+                        BookTitle = tagTitle,
+                        Authors = new List<string> { "Jason Anspach" }
+                    }
+                }
+            };
+
+            return DistanceCalculator.BookDistance(localTracks, edition);
+        }
+
+        [Test]
+        public void should_keep_audio_format_penalties_for_tagged_audiobook_on_ebook_edition()
         {
             var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };
 
@@ -369,8 +424,140 @@ namespace NzbDrone.Core.Test.MediaFiles.BookImport.Identification
 
             var dist = DistanceCalculator.BookDistance(localTracks, edition);
 
-            dist.Reasons.Should().NotContain("wrong format");
-            dist.Reasons.Should().NotContain("audio format");
+            // The audio format preference holds when the file's tags identify the author.
+            dist.Reasons.Should().Contain("wrong format");
+        }
+
+        [Test]
+        public void should_keep_wrong_format_penalty_for_ebook_file_on_audiobook_edition()
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };
+
+            var book = new Book
+            {
+                Title = "Hit & Fade",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata)
+            };
+
+            var edition = new Edition
+            {
+                Title = "Hit & Fade",
+                Format = "Audiobook",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = new List<LocalBook>
+            {
+                new LocalBook
+                {
+                    Path = "/downloads/complete/Hit & Fade.epub",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "Hit & Fade",
+                        BookTitle = "Hit & Fade",
+                        Authors = new List<string> { "Jason Anspach" }
+                    }
+                }
+            };
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().Contain("wrong format");
+        }
+
+        [Test]
+        public void should_not_treat_numbered_chapter_file_names_as_title_evidence()
+        {
+            var localTracks = NumberedChapterTracks("01 - Opening Chapter", "02 - Second Chapter");
+
+            var dist = DistanceCalculator.BookDistance(localTracks, ChapterEdition());
+
+            dist.Reasons.Should().NotContain("book conflict");
+            dist.NormalizedDistance().Should().BeLessThan(0.20);
+        }
+
+        [Test]
+        public void should_accept_tagged_numbered_chapter_files_through_close_match_specification()
+        {
+            var localTracks = NumberedChapterTracks("01 - Opening Chapter", "02 - Second Chapter");
+
+            var localEdition = new LocalEdition(localTracks)
+            {
+                Distance = DistanceCalculator.BookDistance(localTracks, ChapterEdition()),
+                NewDownload = true
+            };
+
+            var decision = new CloseBookMatchSpecification(LogManager.GetCurrentClassLogger()).IsSatisfiedBy(localEdition, null);
+
+            decision.Accepted.Should().BeTrue();
+        }
+
+        private static List<LocalBook> NumberedChapterTracks(params string[] stems)
+        {
+            return stems.Select(stem => new LocalBook
+                {
+                    Path = $"/downloads/complete/Hit & Fade/{stem}.mp3",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "Hit & Fade",
+                        BookTitle = "Hit & Fade",
+                        Authors = new List<string> { "Jason Anspach" }
+                    }
+                })
+                .ToList();
+        }
+
+        private static Edition ChapterEdition()
+        {
+            var book = new Book
+            {
+                Title = "Hit & Fade",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(new AuthorMetadata { Name = "Jason Anspach" })
+            };
+
+            return new Edition
+            {
+                Title = "Hit & Fade",
+                Format = "Audiobook",
+                Book = new LazyLoaded<Book>(book)
+            };
+        }
+
+        [TestCase("Track")]
+        [TestCase("Chapter")]
+        public void should_not_report_track_or_chapter_file_names_as_a_title_conflict(string label)
+        {
+            var authorMetadata = new AuthorMetadata { Name = "Jason Anspach" };
+
+            var book = new Book
+            {
+                Title = "Hit & Fade",
+                AuthorMetadata = new LazyLoaded<AuthorMetadata>(authorMetadata)
+            };
+
+            var edition = new Edition
+            {
+                Title = "Hit & Fade",
+                Format = "Audiobook",
+                Book = new LazyLoaded<Book>(book)
+            };
+
+            var localTracks = Enumerable.Range(1, 3)
+                .Select(i => new LocalBook
+                {
+                    Path = $"/downloads/complete/Hit & Fade/{label} {i:00}.mp3",
+                    FileTrackInfo = new ParsedTrackInfo
+                    {
+                        Title = "Hit & Fade",
+                        BookTitle = "Hit & Fade",
+                        Authors = new List<string> { "Jason Anspach" }
+                    }
+                })
+                .ToList();
+
+            var dist = DistanceCalculator.BookDistance(localTracks, edition);
+
+            dist.Reasons.Should().NotContain("book conflict");
             dist.NormalizedDistance().Should().BeLessThan(0.20);
         }
 

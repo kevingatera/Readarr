@@ -145,6 +145,8 @@ namespace NzbDrone.Core.Test.MusicTests
 
             Mocker.GetMock<IBookService>()
                 .Verify(s => s.AddBook(It.IsAny<Book>(), It.IsAny<bool>()), Times.Never());
+
+            ExceptionVerification.ExpectedWarns(1);
         }
 
         [Test]
@@ -163,7 +165,7 @@ namespace NzbDrone.Core.Test.MusicTests
         }
 
         [Test]
-        public void should_reuse_existing_equivalent_book_when_related_id_is_on_local_book()
+        public void should_add_distinct_related_work_instead_of_reusing_existing_book()
         {
             var newBook = BookToAdd("247146569", "278243734", _fakeAuthor.Metadata.Value.ForeignAuthorId);
 
@@ -215,13 +217,65 @@ namespace NzbDrone.Core.Test.MusicTests
                 .Setup(s => s.GetBooksByAuthorMetadataId(_fakeAuthor.AuthorMetadataId))
                 .Returns(new List<Book> { existingBook });
 
+            // A new related work has no persisted row of its own.
+            Mocker.GetMock<IBookService>()
+                .Setup(s => s.FindById("278243734"))
+                .Returns((Book)null);
+
             var book = Subject.AddBook(newBook);
 
-            book.Id.Should().Be(existingBook.Id);
-            book.ForeignBookId.Should().Be(existingBook.ForeignBookId);
+            book.Id.Should().NotBe(existingBook.Id);
 
             Mocker.GetMock<IBookService>()
-                .Verify(s => s.AddBook(It.IsAny<Book>(), It.IsAny<bool>()), Times.Never());
+                .Verify(s => s.AddBook(It.Is<Book>(b => b.Id == 0), It.IsAny<bool>()), Times.Once());
+        }
+
+        [Test]
+        public void should_keep_exact_persisted_book_on_its_existing_row()
+        {
+            var newBook = BookToAdd("247146569", "278243734", _fakeAuthor.Metadata.Value.ForeignAuthorId);
+
+            _fakeBook = Builder<Book>
+                .CreateNew()
+                .With(x => x.ForeignBookId = "278243734")
+                .With(x => x.Title = "Ground State")
+                .With(x => x.Editions = Builder<Edition>
+                    .CreateListOfSize(1)
+                    .TheFirst(1)
+                    .With(e => e.ForeignEditionId = "247146569")
+                    .With(e => e.Monitored = true)
+                    .BuildList())
+                .Build();
+
+            // The row the add request names is already in the library, as it is for any re-add of a known book.
+            var persisted = Builder<Book>
+                .CreateNew()
+                .With(x => x.Id = 15103)
+                .With(x => x.AuthorMetadataId = _fakeAuthor.AuthorMetadataId)
+                .With(x => x.ForeignBookId = "278243734")
+                .With(x => x.Title = "Ground State")
+                .Build();
+
+            Mocker.GetMock<IProvideBookInfo>()
+                .Setup(s => s.GetBookInfo("278243734"))
+                .Returns(Tuple.Create(_fakeAuthor.Metadata.Value.ForeignAuthorId,
+                                      _fakeBook,
+                                      new List<AuthorMetadata> { _fakeAuthor.Metadata.Value }));
+
+            Mocker.GetMock<IAuthorService>()
+                .Setup(s => s.FindById(_fakeAuthor.Metadata.Value.ForeignAuthorId))
+                .Returns(_fakeAuthor);
+
+            Mocker.GetMock<IBookService>()
+                .Setup(s => s.FindById("278243734"))
+                .Returns(persisted);
+
+            var book = Subject.AddBook(newBook);
+
+            book.Id.Should().Be(15103);
+
+            Mocker.GetMock<IBookService>()
+                .Verify(s => s.AddBook(It.Is<Book>(b => b.Id == 15103), It.IsAny<bool>()), Times.Once());
         }
     }
 }

@@ -5,6 +5,7 @@ using NLog;
 using NzbDrone.Common.Cache;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Serializer;
+using NzbDrone.Core.Books;
 using NzbDrone.Core.Books.Events;
 using NzbDrone.Core.CustomFormats;
 using NzbDrone.Core.Datastore;
@@ -106,9 +107,10 @@ namespace NzbDrone.Core.Download.TrackedDownloads
         public TrackedDownload TrackDownload(DownloadClientDefinition downloadClient, DownloadClientItem downloadItem)
         {
             var existingItem = Find(downloadItem.DownloadId);
-            var latestHistoryEvent = _downloadHistoryService.GetLatestDownloadHistoryItem(downloadItem.DownloadId);
+            var downloadHistory = _downloadHistoryService.GetLatestDownloadHistoryItem(downloadItem.DownloadId);
 
-            if (existingItem != null && existingItem.State != TrackedDownloadState.Downloading && !ShouldResetTrackedDownload(existingItem, latestHistoryEvent))
+            // A new grab of a finished download starts over instead of keeping the old state.
+            if (existingItem != null && existingItem.State != TrackedDownloadState.Downloading && !IsRegrab(downloadHistory))
             {
                 LogItemChange(existingItem, existingItem.DownloadItem, downloadItem);
 
@@ -138,8 +140,6 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                     trackedDownload.RemoteBook = _parsingService.Map(parsedBookInfo);
                 }
 
-                var downloadHistory = latestHistoryEvent;
-
                 if (downloadHistory != null)
                 {
                     var state = GetStateFromHistory(downloadHistory.EventType);
@@ -154,15 +154,10 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
                 if (historyItems.Any())
                 {
-                    var latestGrabbedHistoryItem = historyItems.FirstOrDefault(v => v.EventType == EntityHistoryEventType.Grabbed);
-                    var relevantHistoryItems = latestGrabbedHistoryItem != null
-                        ? historyItems.Where(v => v.Date >= latestGrabbedHistoryItem.Date).ToList()
-                        : historyItems;
-
-                    var firstHistoryItem = relevantHistoryItems.First();
-                    var grabbedHistoryItems = relevantHistoryItems.Where(v => v.EventType == EntityHistoryEventType.Grabbed).ToList();
-                    var grabbedEvent = grabbedHistoryItems.FirstOrDefault();
-                    var fallbackHistoryItem = grabbedEvent ?? firstHistoryItem;
+                    // Every book in the latest grab is kept, including the ones grabbed before the newest row.
+                    var grabCohort = GrabCohort.Latest(historyItems);
+                    var grabbedEvent = grabCohort.FirstOrDefault();
+                    var sourceHistoryItem = grabbedEvent ?? historyItems.First();
 
                     trackedDownload.Indexer = grabbedEvent?.Data?.GetValueOrDefault("indexer");
 
@@ -170,43 +165,35 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                         trackedDownload.RemoteBook?.Author == null ||
                         trackedDownload.RemoteBook.Books.Empty())
                     {
-                        // Try parsing the grabbed source title first and if that fails, try parsing with search criteria.
-                        var historyAuthor = fallbackHistoryItem.Author;
-                        var historyBooks = grabbedHistoryItems
-                            .Select(v => v.Book)
-                            .Where(v => v != null)
-                            .DistinctBy(v => v.Id)
+                        // Try parsing the grabbed source title and if that fails, try parsing it with search criteria.
+                        var historyAuthor = sourceHistoryItem.Author;
+                        var historyBooks = grabCohort.Any()
+                            ? grabCohort.Select(h => h.Book).Where(b => b != null).DistinctBy(b => b.Id).ToList()
+                            : new List<Book> { sourceHistoryItem.Book };
+                        var grabbedBookIds = grabCohort
+                            .Select(h => h.BookId)
+                            .Distinct()
                             .ToList();
 
-                        if (historyBooks.Empty() && firstHistoryItem.Book != null)
-                        {
-                            historyBooks.Add(firstHistoryItem.Book);
-                        }
-
-                        var historyAuthorId = fallbackHistoryItem.AuthorId;
-                        var grabbedBookIds = grabbedHistoryItems
-                            .Select(h => h.BookId)
-                            .Distinct();
-
-                        parsedBookInfo = Parser.Parser.ParseBookTitle(fallbackHistoryItem.SourceTitle);
+                        parsedBookInfo = Parser.Parser.ParseBookTitle(sourceHistoryItem.SourceTitle);
 
                         if (parsedBookInfo != null)
                         {
                             trackedDownload.RemoteBook = _parsingService.Map(parsedBookInfo,
-                                historyAuthorId,
+                                sourceHistoryItem.AuthorId,
                                 grabbedBookIds);
                         }
                         else
                         {
                             parsedBookInfo =
-                                Parser.Parser.ParseBookTitleWithSearchCriteria(fallbackHistoryItem.SourceTitle,
+                                Parser.Parser.ParseBookTitleWithSearchCriteria(sourceHistoryItem.SourceTitle,
                                     historyAuthor,
                                     historyBooks);
 
                             if (parsedBookInfo != null)
                             {
                                 trackedDownload.RemoteBook = _parsingService.Map(parsedBookInfo,
-                                    historyAuthorId,
+                                    sourceHistoryItem.AuthorId,
                                     grabbedBookIds);
                             }
                         }
@@ -244,10 +231,9 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             return trackedDownload;
         }
 
-        private static bool ShouldResetTrackedDownload(TrackedDownload existingItem, Download.History.DownloadHistory latestHistoryEvent)
+        private static bool IsRegrab(DownloadHistory latestDownloadHistory)
         {
-            return existingItem.State != TrackedDownloadState.Downloading &&
-                   latestHistoryEvent?.EventType == DownloadHistoryEventType.DownloadGrabbed;
+            return latestDownloadHistory?.EventType == DownloadHistoryEventType.DownloadGrabbed;
         }
 
         public List<TrackedDownload> GetTrackedDownloads()
@@ -285,6 +271,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
         private void UpdateCachedItem(TrackedDownload trackedDownload)
         {
+            // Re-map only the author and books that still exist. A deleted reference clears the mapping.
             var parsedBookInfo = Parser.Parser.ParseBookTitle(trackedDownload.DownloadItem.Title);
             var authorId = trackedDownload.RemoteBook?.Author?.Id ?? 0;
             var bookIds = trackedDownload.RemoteBook?.Books?
@@ -301,16 +288,13 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
             try
             {
-                trackedDownload.RemoteBook = _parsingService.Map(parsedBookInfo, authorId, bookIds);
+                var remoteBook = _parsingService.Map(parsedBookInfo, authorId, bookIds);
+
+                trackedDownload.RemoteBook = remoteBook != null && remoteBook.Books.Any() ? remoteBook : null;
             }
-            catch (ModelNotFoundException ex)
+            catch (ModelNotFoundException e)
             {
-                _logger.Debug(ex, "Clearing tracked download cache for '{0}' after referenced author or book was deleted", trackedDownload.DownloadItem.Title);
-                trackedDownload.RemoteBook = null;
-            }
-            catch (ApplicationException ex)
-            {
-                _logger.Debug(ex, "Clearing tracked download cache for '{0}' after tracked book mapping became stale", trackedDownload.DownloadItem.Title);
+                _logger.Debug(e, "Clearing tracked download mapping for '{0}' after its author was deleted", trackedDownload.DownloadItem.Title);
                 trackedDownload.RemoteBook = null;
             }
         }

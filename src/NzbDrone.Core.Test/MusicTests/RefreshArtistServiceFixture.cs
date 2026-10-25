@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using FizzWare.NBuilder;
 using Moq;
 using NUnit.Framework;
@@ -184,6 +185,43 @@ namespace NzbDrone.Core.Test.MusicTests
 
             Mocker.GetMock<IMonitorNewBookService>()
                 .Verify(x => x.ShouldMonitorNewBook(newBook, _books, _author.MonitorNewItems), Times.Once());
+        }
+
+        [Test]
+        public void should_keep_distinct_remote_works_with_the_same_title_and_date_as_separate_books()
+        {
+            var audiobook = Builder<Book>.CreateNew()
+                .With(x => x.Id = 0)
+                .With(x => x.ForeignBookId = "3")
+                .With(x => x.Title = "Ground State")
+                .With(x => x.ReleaseDate = new System.DateTime(2026, 1, 27))
+                .With(x => x.Editions = Builder<Edition>.CreateListOfSize(1).TheFirst(1).With(e => e.Format = "Audible Audio").With(e => e.Monitored = true).BuildList())
+                .Build();
+
+            var ebook = Builder<Book>.CreateNew()
+                .With(x => x.Id = 0)
+                .With(x => x.ForeignBookId = "4")
+                .With(x => x.Title = "Ground State")
+                .With(x => x.ReleaseDate = new System.DateTime(2026, 1, 27))
+                .With(x => x.Editions = Builder<Edition>.CreateListOfSize(1).TheFirst(1).With(e => e.Format = "Kindle Edition").With(e => e.Monitored = true).BuildList())
+                .Build();
+
+            _remoteBooks.Add(audiobook);
+            _remoteBooks.Add(ebook);
+
+            var newAuthorInfo = _author.JsonClone();
+            newAuthorInfo.Metadata = _author.Metadata.Value.JsonClone();
+            newAuthorInfo.Books = _remoteBooks;
+
+            GivenNewAuthorInfo(newAuthorInfo);
+            GivenBooksForRefresh(_books);
+            AllowAuthorUpdate();
+
+            Subject.Execute(new RefreshAuthorCommand(_author.Id));
+
+            // Related or equal-looking works are not merged without an exact work identity.
+            Mocker.GetMock<IBookService>()
+                .Verify(x => x.InsertMany(It.Is<List<Book>>(b => b.Any(x => x.ForeignBookId == "3") && b.Any(x => x.ForeignBookId == "4"))), Times.Once());
         }
 
         [Test]

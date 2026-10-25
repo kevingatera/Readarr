@@ -104,13 +104,6 @@ namespace NzbDrone.Core.Books
 
             if (data != null)
             {
-                var localBooks = _bookService.GetBooksByAuthorMetadataId(local.AuthorMetadataId) ?? new List<Book>();
-                var fileCounts = (_mediaFileService.GetFilesByAuthorMetadataId(local.AuthorMetadataId) ?? new List<BookFile>())
-                                                 .Where(x => x.Edition?.Value?.Book?.Value != null)
-                                                 .GroupBy(x => x.Edition.Value.Book.Value.Id)
-                                                 .ToDictionary(x => x.Key, x => x.Count());
-
-                EquivalentBookMergeHelper.CollapseEquivalentRemoteBooks(data, localBooks, fileCounts, _logger);
                 result.Entity = data;
                 result.Metadata = new List<AuthorMetadata> { data.Metadata.Value };
             }
@@ -248,43 +241,15 @@ namespace NzbDrone.Core.Books
                                                      remoteChildren.Select(x => x.ForeignBookId).ToList());
         }
 
-        protected override bool IsRemoteChildrenDegraded(Author entity, List<Book> localChildren, List<Book> remoteChildren)
-        {
-            // An author does not legitimately lose a large fraction of its works in
-            // a single refresh. If the remote payload holds far fewer books than we
-            // already have locally, the metadata source almost certainly returned a
-            // truncated response (rate limiting, partial scrape, sparse contributor
-            // data). Require a meaningful local baseline so small/new authors are
-            // not falsely flagged, and only treat large proportional drops as
-            // suspect. Legitimately-removed books are still reconciled on a later
-            // clean refresh.
-            const int minLocalBooks = 5;
-            const double degradedRatio = 0.5;
-
-            if (localChildren == null || remoteChildren == null)
-            {
-                return false;
-            }
-
-            if (localChildren.Count < minLocalBooks)
-            {
-                return false;
-            }
-
-            // remoteChildren already excludes import-list exclusions, so compare
-            // against the full local set; a >50% drop is implausible for a refresh.
-            return remoteChildren.Count < localChildren.Count * degradedRatio;
-        }
-
         protected override Tuple<Book, List<Book>> GetMatchingExistingChildren(List<Book> existingChildren, Book remote)
         {
             var authorMetadataId = existingChildren.Select(x => x.AuthorMetadataId).FirstOrDefault(x => x != 0);
             var fileCounts = authorMetadataId != 0
-                ? _mediaFileService.GetFilesByAuthorMetadataId(authorMetadataId)
+                ? (_mediaFileService.GetFilesByAuthorMetadataId(authorMetadataId) ?? new List<BookFile>())
                                  .Where(x => x.Edition?.Value?.Book?.Value != null)
                                  .GroupBy(x => x.Edition.Value.Book.Value.Id)
                                  .ToDictionary(x => x.Key, x => x.Count())
-                : existingChildren.ToDictionary(x => x.Id, x => _mediaFileService.GetFilesByBook(x.Id).Count);
+                : existingChildren.ToDictionary(x => x.Id, x => (_mediaFileService.GetFilesByBook(x.Id) ?? new List<BookFile>()).Count);
 
             return EquivalentBookMergeHelper.FindMatchingLocalBook(existingChildren, remote, fileCounts);
         }

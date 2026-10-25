@@ -8,6 +8,7 @@ using NzbDrone.Common.Disk;
 using NzbDrone.Common.EnvironmentInfo;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Books;
+using NzbDrone.Core.Datastore;
 using NzbDrone.Core.DecisionEngine;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.History;
@@ -32,11 +33,10 @@ namespace NzbDrone.Core.MediaFiles
         private readonly IDiskScanService _diskScanService;
         private readonly IAuthorService _authorService;
         private readonly IBookService _bookService;
+        private readonly IHistoryService _historyService;
         private readonly IParsingService _parsingService;
         private readonly IMakeImportDecision _importDecisionMaker;
         private readonly IImportApprovedBooks _importApprovedTracks;
-        private readonly IHistoryService _historyService;
-        private readonly IMetadataTagService _metadataTagService;
         private readonly IEventAggregator _eventAggregator;
         private readonly IRuntimeInfo _runtimeInfo;
         private readonly Logger _logger;
@@ -45,11 +45,10 @@ namespace NzbDrone.Core.MediaFiles
                                              IDiskScanService diskScanService,
                                              IAuthorService authorService,
                                              IBookService bookService,
+                                             IHistoryService historyService,
                                              IParsingService parsingService,
                                              IMakeImportDecision importDecisionMaker,
                                              IImportApprovedBooks importApprovedTracks,
-                                             IHistoryService historyService,
-                                             IMetadataTagService metadataTagService,
                                              IEventAggregator eventAggregator,
                                              IRuntimeInfo runtimeInfo,
                                              Logger logger)
@@ -58,11 +57,10 @@ namespace NzbDrone.Core.MediaFiles
             _diskScanService = diskScanService;
             _authorService = authorService;
             _bookService = bookService;
+            _historyService = historyService;
             _parsingService = parsingService;
             _importDecisionMaker = importDecisionMaker;
             _importApprovedTracks = importApprovedTracks;
-            _historyService = historyService;
-            _metadataTagService = metadataTagService;
             _eventAggregator = eventAggregator;
             _runtimeInfo = runtimeInfo;
             _logger = logger;
@@ -222,16 +220,7 @@ namespace NzbDrone.Core.MediaFiles
             {
                 Author = author
             };
-
-            var historyBookOverride = GetHistoryBookOverride(downloadClientItem,
-                new[] { folderInfo?.BookTitle, directoryInfo.Name }.Concat(GetEmbeddedTitleHints(audioFiles)),
-                out var historyBookInfo);
-
-            if (historyBookOverride != null)
-            {
-                idOverrides.Book = historyBookOverride;
-                idOverrides.Author = historyBookOverride.Author?.Value ?? author;
-            }
+            var historyBookInfo = ApplyGrabHistoryOverride(idOverrides, downloadClientItem, author, new[] { directoryInfo.Name });
 
             var idInfo = new ImportDecisionMakerInfo
             {
@@ -319,16 +308,7 @@ namespace NzbDrone.Core.MediaFiles
             {
                 Author = author
             };
-
-            var historyBookOverride = GetHistoryBookOverride(downloadClientItem,
-                new[] { Path.GetFileNameWithoutExtension(fileInfo.Name) }.Concat(GetEmbeddedTitleHints(new[] { fileInfo })),
-                out var historyBookInfo);
-
-            if (historyBookOverride != null)
-            {
-                idOverrides.Book = historyBookOverride;
-                idOverrides.Author = historyBookOverride.Author?.Value ?? author;
-            }
+            var historyBookInfo = ApplyGrabHistoryOverride(idOverrides, downloadClientItem, author, new[] { Path.GetFileNameWithoutExtension(fileInfo.Name) });
 
             var idInfo = new ImportDecisionMakerInfo
             {
@@ -349,45 +329,27 @@ namespace NzbDrone.Core.MediaFiles
             return _importApprovedTracks.Import(decisions, true, downloadClientItem, importMode);
         }
 
-        private IEnumerable<string> GetEmbeddedTitleHints(IEnumerable<IFileInfo> files)
+        // Applies the book from the latest grab only when the grab names exactly one book and
+        // the current download title and file name agree with it. Anything else falls back to identification.
+        // Returns the parsed grab title, which identification uses as evidence for the release the grab was made for.
+        private ParsedBookInfo ApplyGrabHistoryOverride(IdentificationOverrides idOverrides, DownloadClientItem downloadClientItem, Author author, IEnumerable<string> fileNames)
         {
-            foreach (var file in files ?? Enumerable.Empty<IFileInfo>())
+            var historyBook = GetGrabHistoryBook(downloadClientItem, author, fileNames, out var grabbedInfo);
+
+            if (historyBook == null)
             {
-                ParsedTrackInfo tags;
-
-                try
-                {
-                    tags = _metadataTagService.ReadTags(file);
-                }
-                catch (Exception e)
-                {
-                    _logger.Debug(e, "Unable to read embedded tags for {0}", file?.FullName);
-                    continue;
-                }
-
-                if (tags?.BookTitle.IsNotNullOrWhiteSpace() ?? false)
-                {
-                    yield return tags.BookTitle;
-                }
-
-                if (tags?.Title.IsNotNullOrWhiteSpace() ?? false)
-                {
-                    yield return tags.Title;
-                }
+                return null;
             }
+
+            idOverrides.Book = historyBook;
+            idOverrides.Author = author ?? historyBook.Author?.Value;
+
+            return grabbedInfo;
         }
 
-        private string GetCleanedUpFolderName(string folder)
+        private Book GetGrabHistoryBook(DownloadClientItem downloadClientItem, Author author, IEnumerable<string> fileNames, out ParsedBookInfo grabbedInfo)
         {
-            folder = folder.Replace("_UNPACK_", "")
-                           .Replace("_FAILED_", "");
-
-            return folder;
-        }
-
-        private Book GetHistoryBookOverride(DownloadClientItem downloadClientItem, IEnumerable<string> titleHints, out ParsedBookInfo historyBookInfo)
-        {
-            historyBookInfo = null;
+            grabbedInfo = null;
 
             if (downloadClientItem == null || downloadClientItem.DownloadId.IsNullOrWhiteSpace())
             {
@@ -396,123 +358,96 @@ namespace NzbDrone.Core.MediaFiles
 
             var grabbedHistory = _historyService.Find(downloadClientItem.DownloadId, EntityHistoryEventType.Grabbed) ?? new List<EntityHistory>();
 
-            var grabbedBookIds = grabbedHistory
-                .OrderByDescending(h => h.Date)
+            var latestGrab = GrabCohort.Latest(grabbedHistory);
+
+            var grabbedBookIds = latestGrab
                 .Select(h => h.BookId)
                 .Where(id => id > 0)
                 .Distinct()
                 .ToList();
 
-            if (grabbedBookIds.Count == 0)
+            if (grabbedBookIds.Count != 1)
             {
                 return null;
             }
 
-            foreach (var grabbedBookId in grabbedBookIds)
-            {
-                try
-                {
-                    var historyBook = _bookService.GetBook(grabbedBookId);
-                    if (!IsHistoryBookOverrideConsistent(historyBook, grabbedHistory, downloadClientItem, titleHints))
-                    {
-                        _logger.Debug("Skipping history book override for downloadId={0}; override book '{1}' does not match current title hints", downloadClientItem.DownloadId, historyBook?.Title);
-                        continue;
-                    }
+            var grabbedRow = latestGrab.First(h => h.BookId == grabbedBookIds[0]);
 
-                    var matchedHistory = grabbedHistory.FirstOrDefault(h => h.BookId == grabbedBookId);
-                    historyBookInfo = Parser.Parser.ParseBookTitle(matchedHistory?.SourceTitle);
-                    return historyBook;
-                }
-                catch (Exception e)
-                {
-                    _logger.Debug(e, "Unable to load history book override for downloadId={0}", downloadClientItem.DownloadId);
-                }
+            Book historyBook;
+
+            try
+            {
+                historyBook = _bookService.GetBook(grabbedBookIds[0]);
+            }
+            catch (ModelNotFoundException e)
+            {
+                _logger.Debug(e, "Grab history for downloadId={0} references a deleted book", downloadClientItem.DownloadId);
+                return null;
             }
 
-            return null;
+            if (author != null && historyBook.AuthorId != author.Id)
+            {
+                return null;
+            }
+
+            if (!MatchesCurrentTitles(historyBook, downloadClientItem.Title, fileNames))
+            {
+                _logger.Debug("Skipping grab history book override for downloadId={0}; current titles do not match '{1}'", downloadClientItem.DownloadId, historyBook.Title);
+                return null;
+            }
+
+            grabbedInfo = Parser.Parser.ParseBookTitle(grabbedRow.SourceTitle);
+
+            return historyBook;
         }
 
-        private bool IsHistoryBookOverrideConsistent(Book historyBook, List<EntityHistory> grabbedHistory, DownloadClientItem downloadClientItem, IEnumerable<string> titleHints)
+        // Only the current client title and file or folder names count as evidence.
+        // Titles from the old grab are not used, because a reused download hash can carry a different release.
+        private static bool MatchesCurrentTitles(Book book, string clientTitle, IEnumerable<string> fileNames)
         {
-            if (historyBook == null || historyBook.Title.IsNullOrWhiteSpace())
-            {
-                return false;
-            }
+            var expectedTitle = Parser.Parser.NormalizeTitle(book.Title);
 
-            var expectedTitle = Parser.Parser.NormalizeTitle(historyBook.Title);
             if (expectedTitle.IsNullOrWhiteSpace())
             {
                 return false;
             }
 
-            var candidateTitles = new List<string>();
+            var evidence = new[] { clientTitle }
+                .Concat(fileNames)
+                .Where(name => name.IsNotNullOrWhiteSpace());
 
-            if (downloadClientItem?.Title.IsNotNullOrWhiteSpace() ?? false)
+            var matched = false;
+
+            foreach (var name in evidence)
             {
-                candidateTitles.Add(downloadClientItem.Title);
-            }
+                var parsedTitle = Parser.Parser.ParseBookTitle(name)?.BookTitle;
 
-            candidateTitles.AddRange(grabbedHistory
-                .Select(h => h.SourceTitle)
-                .Where(x => x.IsNotNullOrWhiteSpace()));
-
-            if (titleHints != null)
-            {
-                candidateTitles.AddRange(titleHints.Where(x => x.IsNotNullOrWhiteSpace()));
-            }
-
-            foreach (var candidate in candidateTitles)
-            {
-                var parsed = Parser.Parser.ParseBookTitle(candidate);
-                if (parsed?.BookTitle.IsNotNullOrWhiteSpace() ?? false)
+                if (parsedTitle.IsNullOrWhiteSpace())
                 {
-                    if (LooksLikeSameBook(expectedTitle, parsed.BookTitle))
-                    {
-                        return true;
-                    }
+                    continue;
                 }
 
-                if (LooksLikeSameBook(expectedTitle, candidate) || LooksLikeSameBook(expectedTitle, candidate.RemoveAfterDash()))
+                var normalizedTitle = Parser.Parser.NormalizeTitle(parsedTitle);
+
+                if (normalizedTitle.IsNullOrWhiteSpace() ||
+                    (normalizedTitle != expectedTitle && normalizedTitle.LevenshteinCoefficient(expectedTitle) < 0.9))
                 {
-                    return true;
+                    // A parsed title that names another book contradicts the grab.
+                    return false;
                 }
+
+                matched = true;
             }
 
-            return false;
+            return matched;
         }
 
-        private static bool LooksLikeSameBook(string expectedNormalizedTitle, string candidateTitle)
+        private string GetCleanedUpFolderName(string folder)
         {
-            if (candidateTitle.IsNullOrWhiteSpace())
-            {
-                return false;
-            }
+            folder = folder.Replace("_UNPACK_", "")
+                           .Replace("_FAILED_", "");
 
-            var normalizedCandidate = Parser.Parser.NormalizeTitle(candidateTitle);
-            if (normalizedCandidate.IsNullOrWhiteSpace())
-            {
-                return false;
-            }
-
-            var expectedTokens = expectedNormalizedTitle
-                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .ToList();
-
-            var candidateTokens = normalizedCandidate
-                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .ToList();
-
-            if (expectedTokens.Any() && expectedTokens.All(token => candidateTokens.Contains(token)))
-            {
-                return true;
-            }
-
-            if (candidateTokens.Any() && candidateTokens.All(token => expectedTokens.Contains(token)))
-            {
-                return true;
-            }
-
-            return normalizedCandidate.LevenshteinCoefficient(expectedNormalizedTitle) >= 0.8;
+            return folder;
         }
 
         private ImportResult FileIsLockedResult(string audioFile)

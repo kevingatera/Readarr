@@ -110,14 +110,16 @@ namespace NzbDrone.Core.Test.MediaFiles
         }
 
         [Test]
-        public void should_assign_unique_parts_to_multi_file_audiobooks()
+        public void should_assign_unique_parts_to_multi_file_audiobooks_with_missing_parts()
         {
+            _approvedDecisions[0].Item.Part = 0;
+
             var secondDecision = new ImportDecision<LocalBook>(new LocalBook
             {
                 Author = _approvedDecisions[0].Item.Author,
                 Book = _approvedDecisions[0].Item.Book,
                 Edition = _approvedDecisions[0].Item.Edition,
-                Part = 1,
+                Part = 0,
                 Path = Path.Combine(_approvedDecisions[0].Item.Author.Path, "Alien Ant Farm - 02 - Pilot.mp3"),
                 Quality = new QualityModel(Quality.MP3),
                 FileTrackInfo = new ParsedTrackInfo()
@@ -151,6 +153,8 @@ namespace NzbDrone.Core.Test.MediaFiles
 
             Mocker.GetMock<IMediaFileService>()
                 .Verify(v => v.AddMany(It.Is<List<BookFile>>(files => files.Count == 1)), Times.Once());
+
+            ExceptionVerification.ExpectedWarns(1);
         }
 
         [Test]
@@ -252,6 +256,72 @@ namespace NzbDrone.Core.Test.MediaFiles
 
             Mocker.GetMock<IMediaFileService>()
                 .Verify(v => v.AddMany(It.IsAny<List<BookFile>>()), Times.Never());
+
+            ExceptionVerification.ExpectedWarns(1);
+        }
+
+        [Test]
+        public void should_import_when_track_info_is_missing()
+        {
+            _approvedDecisions.First().Item.FileTrackInfo = null;
+
+            var result = Subject.Import(_approvedDecisions, false);
+
+            result.Should().ContainSingle(d => d.Result == ImportResultType.Imported);
+
+            Mocker.GetMock<IUpgradeMediaFiles>()
+                .Verify(v => v.UpgradeBookFile(It.IsAny<BookFile>(), It.IsAny<LocalBook>(), It.IsAny<bool>()), Times.Once());
+        }
+
+        [Test]
+        public void should_reject_persisted_edition_owned_by_another_book()
+        {
+            var decision = _approvedDecisions.First();
+            decision.Item.Edition = Builder<Edition>.CreateNew()
+                .With(x => x.Id = 77)
+                .With(x => x.BookId = decision.Item.Book.Id + 999)
+                .With(x => x.ForeignEditionId = "persisted-other-book-edition")
+                .With(x => x.Monitored = true)
+                .Build();
+
+            var result = Subject.Import(new List<ImportDecision<LocalBook>> { decision }, false);
+
+            result.Should().ContainSingle();
+            result.Single().Result.Should().Be(ImportResultType.Rejected);
+
+            Mocker.GetMock<IEditionService>()
+                .Verify(v => v.SetMonitored(It.IsAny<Edition>()), Times.Never());
+
+            Mocker.GetMock<IMediaFileService>()
+                .Verify(v => v.AddMany(It.IsAny<List<BookFile>>()), Times.Never());
+
+            ExceptionVerification.ExpectedWarns(1);
+        }
+
+        [Test]
+        public void should_import_duplicate_source_file_once()
+        {
+            var first = _approvedDecisions.First();
+            var duplicate = new ImportDecision<LocalBook>(new LocalBook
+            {
+                Author = first.Item.Author,
+                Book = first.Item.Book,
+                Edition = first.Item.Edition,
+                Part = 1,
+                Path = first.Item.Path,
+                Quality = new QualityModel(Quality.MP3),
+                Size = 1.Megabytes(),
+                FileTrackInfo = new ParsedTrackInfo()
+            });
+
+            var result = Subject.Import(new List<ImportDecision<LocalBook>> { first, duplicate }, false);
+
+            result.Should().HaveCount(2);
+            result.Should().ContainSingle(d => d.Result == ImportResultType.Imported);
+            result.Should().ContainSingle(d => d.Result == ImportResultType.Rejected);
+
+            Mocker.GetMock<IUpgradeMediaFiles>()
+                .Verify(v => v.UpgradeBookFile(It.IsAny<BookFile>(), It.IsAny<LocalBook>(), It.IsAny<bool>()), Times.Once());
         }
 
         [Test]
@@ -340,8 +410,8 @@ namespace NzbDrone.Core.Test.MediaFiles
             var results = Subject.Import(all, false);
 
             results.Should().HaveCount(all.Count);
-            results.Should().OnlyContain(d => d.Result == ImportResultType.Imported);
-            results.First().ImportDecision.Item.Size.Should().Be(hqDecision.Item.Size);
+            results.Should().ContainSingle(d => d.Result == ImportResultType.Imported);
+            results.Should().ContainSingle(d => d.Result == ImportResultType.Imported && d.ImportDecision.Item.Size == hqDecision.Item.Size);
         }
 
         [Test]
@@ -429,6 +499,8 @@ namespace NzbDrone.Core.Test.MediaFiles
 
             Mocker.GetMock<IMediaFileService>()
                 .Verify(v => v.Delete(It.IsAny<BookFile>(), DeleteMediaFileReason.ManualOverride), Times.Never());
+
+            ExceptionVerification.ExpectedWarns(1);
         }
 
         [Test]

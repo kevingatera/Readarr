@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Abstractions;
 using System.Linq;
-using System.Text.RegularExpressions;
 using NLog;
 using NzbDrone.Common;
 using NzbDrone.Common.Crypto;
@@ -33,12 +32,6 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
 
     public class ManualImportService : IExecute<ManualImportCommand>, IManualImportService
     {
-        private const double OverrideMatchThreshold = 0.55;
-        private const double OverrideMatchGapThreshold = 0.05;
-        private static readonly Regex LeadingPartRegex = new Regex(@"^\s*(?:(?:book|part|pt|chapter|disc|cd|track)\s*)?(?<number>\d+(?:\.\d+)?|[ivxlcdm]+)\s*[-._:)]*\s+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        private static readonly Regex RemoveSeriesPartRegex = new Regex(@"\b(?:book|part|pt)\s*(?:\d+(?:\.\d+)?|[ivxlcdm]+)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        private static readonly Regex CollapseWhitespaceRegex = new Regex(@"\s{2,}", RegexOptions.Compiled);
-
         private readonly IDiskProvider _diskProvider;
         private readonly IParsingService _parsingService;
         private readonly IRootFolderService _rootFolderService;
@@ -104,12 +97,13 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
 
                 if (trackedDownload == null)
                 {
+                    // The id stays on the candidates. Import uses it to see that no client item exists,
+                    // which keeps a stale download from being moved when a client submits these fields back.
                     _logger.Warn("Tracked download {0} was not available while loading manual import candidates", downloadId);
-                    downloadId = null;
                 }
                 else
                 {
-                    author ??= GetTrackedDownloadAuthor(trackedDownload);
+                    author ??= TrackedDownloadAuthorResolver.Resolve(trackedDownload, _authorService.GetAuthorByMetadataId);
 
                     if (trackedDownload.ImportItem == null)
                     {
@@ -128,14 +122,17 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 }
 
                 var files = new List<IFileInfo> { _diskProvider.GetFileInfo(path) };
-                author ??= GetTrackedDownloadAuthor(trackedDownload) ?? _parsingService.GetAuthor(Path.GetFileNameWithoutExtension(path));
+                author ??= TrackedDownloadAuthorResolver.Resolve(trackedDownload, _authorService.GetAuthorByMetadataId) ?? _parsingService.GetAuthor(Path.GetFileNameWithoutExtension(path));
 
                 var itemInfo = new ImportDecisionMakerInfo
                 {
                     DownloadClientItem = trackedDownload?.DownloadItem,
                     ParsedBookInfo = Parser.Parser.ParseBookTitle(Path.GetFileNameWithoutExtension(path))
                 };
-                var idOverrides = ResolveIdentificationOverrides(author, files, itemInfo);
+                var idOverrides = new IdentificationOverrides
+                {
+                    Author = author
+                };
 
                 var config = new ImportDecisionMakerConfig
                 {
@@ -155,29 +152,6 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
             }
 
             return ProcessFolder(path, downloadId, author, filter, replaceExistingFiles);
-        }
-
-        private Author GetTrackedDownloadAuthor(TrackedDownload trackedDownload)
-        {
-            var remoteBook = trackedDownload?.RemoteBook;
-            if (remoteBook == null)
-            {
-                return null;
-            }
-
-            var author = remoteBook.Author ?? remoteBook.Books?.FirstOrDefault(x => x?.Author != null)?.Author;
-            if (author != null)
-            {
-                return author;
-            }
-
-            var authorMetadataId = remoteBook.Books?.FirstOrDefault(x => x?.AuthorMetadataId > 0)?.AuthorMetadataId ?? 0;
-            if (authorMetadataId > 0)
-            {
-                return _authorService.GetAuthorByMetadataId(authorMetadataId);
-            }
-
-            return null;
         }
 
         private List<ManualImportItem> ProcessFolder(string folder, string downloadId, Author author, FilterFilesType filter, bool replaceExistingFiles)
@@ -203,7 +177,10 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
                 DownloadClientItem = downloadClientItem,
                 ParsedBookInfo = Parser.Parser.ParseBookTitle(directoryInfo.Name)
             };
-            var idOverrides = ResolveIdentificationOverrides(author, authorFiles, itemInfo);
+            var idOverrides = new IdentificationOverrides
+            {
+                Author = author
+            };
             var config = new ImportDecisionMakerConfig
             {
                 Filter = filter,
@@ -229,352 +206,6 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Manual
             var existingItems = existingDecisions.Select(x => MapItem(x, null, replaceExistingFiles, false));
 
             return newItems.Concat(existingItems).ToList();
-        }
-
-        private IdentificationOverrides ResolveIdentificationOverrides(Author author, List<IFileInfo> authorFiles, ImportDecisionMakerInfo itemInfo)
-        {
-            var idOverrides = new IdentificationOverrides
-            {
-                Author = author
-            };
-
-            if (author?.AuthorMetadataId <= 0 || !authorFiles.Any())
-            {
-                return idOverrides;
-            }
-
-            var embeddedTracks = authorFiles
-                .Select(file => _metadataTagService.ReadTags(file))
-                .Where(track => track != null)
-                .ToList();
-
-            var distinctEmbeddedTitles = embeddedTracks
-                .SelectMany(track => new[] { track.BookTitle, track.Title })
-                .Where(title => title.IsNotNullOrWhiteSpace())
-                .Select(CanonicalizeTitle)
-                .Where(title => title.IsNotNullOrWhiteSpace())
-                .Distinct(StringComparer.InvariantCultureIgnoreCase)
-                .ToList();
-
-            // Only apply a direct override when the embedded tags consistently describe one book.
-            if (distinctEmbeddedTitles.Count > 2)
-            {
-                return idOverrides;
-            }
-
-            var titleCandidates = GetTitleCandidates(embeddedTracks, itemInfo?.ParsedBookInfo);
-            var book = ResolveBookOverride(author, titleCandidates);
-            if (book == null)
-            {
-                return idOverrides;
-            }
-
-            idOverrides.Book = book;
-
-            var edition = ResolveEditionOverride(author, book, titleCandidates);
-            if (edition != null)
-            {
-                idOverrides.Edition = edition;
-            }
-
-            _logger.Debug("Manual import resolved book override to '{0}'", book.Title);
-            return idOverrides;
-        }
-
-        private Book ResolveBookOverride(Author author, List<string> titleCandidates)
-        {
-            var normalizedCandidates = (titleCandidates ?? new List<string>())
-                .Where(title => title.IsNotNullOrWhiteSpace())
-                .Distinct(StringComparer.InvariantCultureIgnoreCase)
-                .ToList();
-
-            if (author?.AuthorMetadataId <= 0 || !normalizedCandidates.Any())
-            {
-                return null;
-            }
-
-            var authorBooks = (_bookService.GetBooksByAuthorMetadataId(author.AuthorMetadataId) ?? new List<Book>())
-                .Where(book => book?.Title.IsNotNullOrWhiteSpace() == true)
-                .ToList();
-
-            if (!authorBooks.Any())
-            {
-                return null;
-            }
-
-            var directMatches = authorBooks
-                .Select(book => new
-                {
-                    Book = book,
-                    Score = normalizedCandidates.Max(candidate => GetTitleMatchScore(book.Title, candidate))
-                })
-                .Where(x => x.Score >= OverrideMatchThreshold)
-                .OrderByDescending(x => x.Score)
-                .ThenByDescending(x => Parser.Parser.NormalizeTitle(x.Book.Title)?.Length ?? 0)
-                .ThenBy(x => x.Book.Id)
-                .ToList();
-
-            if (directMatches.Count == 1)
-            {
-                return directMatches[0].Book;
-            }
-
-            if (directMatches.Count > 1 && directMatches[0].Score > directMatches[1].Score + OverrideMatchGapThreshold)
-            {
-                return directMatches[0].Book;
-            }
-
-            var fallbackMatches = normalizedCandidates
-                .SelectMany(candidate => _bookService.GetCandidates(author.AuthorMetadataId, candidate))
-                .Where(book => book?.Title.IsNotNullOrWhiteSpace() == true)
-                .DistinctBy(book => book.Id)
-                .Select(book => new
-                {
-                    Book = book,
-                    Score = normalizedCandidates.Max(candidate => GetTitleMatchScore(book.Title, candidate))
-                })
-                .Where(x => x.Score >= OverrideMatchThreshold)
-                .OrderByDescending(x => x.Score)
-                .ThenByDescending(x => Parser.Parser.NormalizeTitle(x.Book.Title)?.Length ?? 0)
-                .ThenBy(x => x.Book.Id)
-                .ToList();
-
-            if (fallbackMatches.Count == 1)
-            {
-                return fallbackMatches[0].Book;
-            }
-
-            if (fallbackMatches.Count > 1 && fallbackMatches[0].Score > fallbackMatches[1].Score + OverrideMatchGapThreshold)
-            {
-                return fallbackMatches[0].Book;
-            }
-
-            return directMatches.FirstOrDefault()?.Book;
-        }
-
-        private Edition ResolveEditionOverride(Author author, Book book, List<string> titleCandidates)
-        {
-            var normalizedCandidates = (titleCandidates ?? new List<string>())
-                .Where(title => title.IsNotNullOrWhiteSpace())
-                .Distinct(StringComparer.InvariantCultureIgnoreCase)
-                .ToList();
-
-            if (author?.AuthorMetadataId <= 0 || book == null || !normalizedCandidates.Any())
-            {
-                return null;
-            }
-
-            var editions = (_editionService.GetEditionsByBook(book.Id) ?? new List<Edition>())
-                .Where(edition => edition?.Title.IsNotNullOrWhiteSpace() == true)
-                .ToList();
-
-            if (!editions.Any())
-            {
-                return null;
-            }
-
-            var directMatches = editions
-                .Select(edition => new
-                {
-                    Edition = edition,
-                    Score = normalizedCandidates.Max(candidate => GetTitleMatchScore(edition.Title, candidate))
-                })
-                .Where(x => x.Score >= OverrideMatchThreshold)
-                .OrderByDescending(x => x.Score)
-                .ThenByDescending(x => Parser.Parser.NormalizeTitle(x.Edition.Title)?.Length ?? 0)
-                .ThenBy(x => x.Edition.Id)
-                .ToList();
-
-            if (directMatches.Count == 1)
-            {
-                return directMatches[0].Edition;
-            }
-
-            if (directMatches.Count > 1 && directMatches[0].Score > directMatches[1].Score + OverrideMatchGapThreshold)
-            {
-                return directMatches[0].Edition;
-            }
-
-            if (editions.Count == 1)
-            {
-                return editions[0];
-            }
-
-            foreach (var candidate in normalizedCandidates)
-            {
-                var edition = _editionService.FindByTitle(author.AuthorMetadataId, candidate) ??
-                              _editionService.FindByTitleInexact(author.AuthorMetadataId, candidate);
-
-                if (edition?.BookId == book.Id)
-                {
-                    return edition;
-                }
-
-                var candidateEditions = _editionService.GetCandidates(author.AuthorMetadataId, candidate)
-                    .Where(x => x?.BookId == book.Id && x.Title.IsNotNullOrWhiteSpace())
-                    .DistinctBy(x => x.Id)
-                    .Select(editionCandidate => new
-                    {
-                        Edition = editionCandidate,
-                        Score = normalizedCandidates.Max(title => GetTitleMatchScore(editionCandidate.Title, title))
-                    })
-                    .Where(x => x.Score >= OverrideMatchThreshold)
-                    .OrderByDescending(x => x.Score)
-                    .ThenByDescending(x => Parser.Parser.NormalizeTitle(x.Edition.Title)?.Length ?? 0)
-                    .ToList();
-
-                if (candidateEditions.Count == 1)
-                {
-                    return candidateEditions[0].Edition;
-                }
-
-                if (candidateEditions.Count > 1 && candidateEditions[0].Score > candidateEditions[1].Score + OverrideMatchGapThreshold)
-                {
-                    return candidateEditions[0].Edition;
-                }
-            }
-
-            return directMatches.FirstOrDefault()?.Edition;
-        }
-
-        private static List<string> GetTitleCandidates(List<ParsedTrackInfo> embeddedTracks, ParsedBookInfo parsedBookInfo)
-        {
-            var candidates = new List<string>();
-
-            void Add(string value)
-            {
-                if (value.IsNullOrWhiteSpace())
-                {
-                    return;
-                }
-
-                foreach (var variant in ExpandTitleCandidates(value))
-                {
-                    if (!candidates.Any(x => x.Equals(variant, StringComparison.InvariantCultureIgnoreCase)))
-                    {
-                        candidates.Add(variant);
-                    }
-                }
-            }
-
-            Add(embeddedTracks.MostCommon(x => x.BookTitle));
-            Add(embeddedTracks.MostCommon(x => x.Title));
-            Add(parsedBookInfo?.BookTitle);
-
-            return candidates;
-        }
-
-        private static IEnumerable<string> ExpandTitleCandidates(string title)
-        {
-            if (title.IsNullOrWhiteSpace())
-            {
-                yield break;
-            }
-
-            foreach (var candidate in new[]
-                     {
-                         title,
-                         Parser.Parser.ParseBookTitle(title)?.BookTitle,
-                         title.CleanBookTitle(),
-                         title.RemoveBracketsAndContents(),
-                         title.RemoveAfterDash(),
-                         LeadingPartRegex.Replace(title, string.Empty),
-                         RemoveSeriesPartRegex.Replace(title, " ")
-                     }
-                     .Where(x => x.IsNotNullOrWhiteSpace())
-                     .Select(CanonicalizeTitle)
-                     .Where(x => x.IsNotNullOrWhiteSpace()))
-            {
-                yield return candidate;
-
-                if (candidate.Contains(" - ", StringComparison.Ordinal))
-                {
-                    var splitIndex = candidate.LastIndexOf(" - ", StringComparison.Ordinal);
-                    yield return CanonicalizeTitle(candidate.Substring(0, splitIndex));
-                    yield return CanonicalizeTitle(candidate.Substring(splitIndex + 3));
-                }
-
-                if (candidate.Contains(':'))
-                {
-                    var split = candidate.Split(':', 2);
-                    yield return CanonicalizeTitle(split[0]);
-                    yield return CanonicalizeTitle(split[1]);
-                }
-            }
-        }
-
-        private static string CanonicalizeTitle(string title)
-        {
-            if (title == null)
-            {
-                return null;
-            }
-
-            var normalized = title
-                .Trim(' ', '-', '_', '.', ',', ':', ';')
-                .Replace('_', ' ');
-
-            return CollapseWhitespaceRegex.Replace(normalized, " ");
-        }
-
-        private static bool LooksLikeSameBook(string expectedTitle, string candidateTitle)
-        {
-            return GetTitleMatchScore(expectedTitle, candidateTitle) >= OverrideMatchThreshold;
-        }
-
-        private static double GetTitleMatchScore(string expectedTitle, string candidateTitle)
-        {
-            if (expectedTitle.IsNullOrWhiteSpace() || candidateTitle.IsNullOrWhiteSpace())
-            {
-                return 0.0;
-            }
-
-            var expectedNormalizedTitle = Parser.Parser.NormalizeTitle(expectedTitle);
-            var normalizedCandidate = Parser.Parser.NormalizeTitle(candidateTitle);
-            if (expectedNormalizedTitle.IsNullOrWhiteSpace() || normalizedCandidate.IsNullOrWhiteSpace())
-            {
-                return 0.0;
-            }
-
-            if (normalizedCandidate.Equals(expectedNormalizedTitle, StringComparison.InvariantCultureIgnoreCase))
-            {
-                return 1.0;
-            }
-
-            var expectedTokens = expectedNormalizedTitle
-                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .ToList();
-
-            var candidateTokens = normalizedCandidate
-                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .ToList();
-
-            var scores = new List<double>
-            {
-                normalizedCandidate.LevenshteinCoefficient(expectedNormalizedTitle)
-            };
-
-            if (normalizedCandidate.Contains(expectedNormalizedTitle, StringComparison.InvariantCultureIgnoreCase))
-            {
-                scores.Add((double)expectedNormalizedTitle.Length / normalizedCandidate.Length);
-            }
-
-            if (expectedNormalizedTitle.Contains(normalizedCandidate, StringComparison.InvariantCultureIgnoreCase))
-            {
-                scores.Add((double)normalizedCandidate.Length / expectedNormalizedTitle.Length);
-            }
-
-            if (expectedTokens.Any() && expectedTokens.All(token => candidateTokens.Contains(token)))
-            {
-                scores.Add((double)expectedTokens.Count / candidateTokens.Count);
-            }
-
-            if (candidateTokens.Any() && candidateTokens.All(token => expectedTokens.Contains(token)))
-            {
-                scores.Add((double)candidateTokens.Count / expectedTokens.Count);
-            }
-
-            return scores.Max();
         }
 
         public List<ManualImportItem> UpdateItems(List<ManualImportItem> items)

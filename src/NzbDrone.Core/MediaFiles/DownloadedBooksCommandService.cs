@@ -57,7 +57,7 @@ namespace NzbDrone.Core.MediaFiles
                 {
                     _logger.Debug("External directory scan request for known download {0}. [{1}]", message.DownloadClientId, message.Path);
 
-                    var importResults = _downloadedTracksImportService.ProcessPath(message.Path, message.ImportMode, GetTrackedDownloadAuthor(trackedDownload), trackedDownload.DownloadItem);
+                    var importResults = _downloadedTracksImportService.ProcessPath(message.Path, message.ImportMode, TrackedDownloadAuthorResolver.Resolve(trackedDownload, _authorService.GetAuthorByMetadataId), trackedDownload.DownloadItem);
 
                     _completedDownloadService.VerifyImport(trackedDownload, importResults);
 
@@ -68,29 +68,6 @@ namespace NzbDrone.Core.MediaFiles
             }
 
             return _downloadedTracksImportService.ProcessPath(message.Path, message.ImportMode);
-        }
-
-        private Author GetTrackedDownloadAuthor(TrackedDownload trackedDownload)
-        {
-            var remoteBook = trackedDownload?.RemoteBook;
-            if (remoteBook == null)
-            {
-                return null;
-            }
-
-            var author = remoteBook.Author ?? remoteBook.Books?.FirstOrDefault(x => x?.Author != null)?.Author;
-            if (author != null)
-            {
-                return author;
-            }
-
-            var authorMetadataId = remoteBook.Books?.FirstOrDefault(x => x?.AuthorMetadataId > 0)?.AuthorMetadataId ?? 0;
-            if (authorMetadataId > 0)
-            {
-                return _authorService.GetAuthorByMetadataId(authorMetadataId);
-            }
-
-            return null;
         }
 
         public void Execute(DownloadedBooksScanCommand message)

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using FluentAssertions;
@@ -5,9 +6,7 @@ using Moq;
 using NUnit.Framework;
 using NzbDrone.Core.Books;
 using NzbDrone.Core.Books.Events;
-using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Download;
-using NzbDrone.Core.Download.History;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.History;
 using NzbDrone.Core.Indexers;
@@ -28,71 +27,10 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
                 {
                     new EntityHistory()
                     {
-                        DownloadId = "35238",
-                        SourceTitle = "Audio Author - Audio Book [2018 - FLAC]",
-                        AuthorId = 5,
-                        BookId = 4,
-                    }
-                });
-        }
-
-        private void GivenDownloadHistoryWithImportIncompleteThenGrabbed()
-        {
-            Mocker.GetMock<IHistoryService>()
-                .Setup(s => s.FindByDownloadId(It.Is<string>(sr => sr == "35238")))
-                .Returns(new List<EntityHistory>
-                {
-                    new EntityHistory
-                    {
-                        DownloadId = "35238",
-                        SourceTitle = "01 The Bold",
-                        AuthorId = 999,
-                        BookId = 999,
-                        EventType = EntityHistoryEventType.BookImportIncomplete
-                    },
-                    new EntityHistory
-                    {
-                        DownloadId = "35238",
-                        SourceTitle = "Audio Author - Audio Book [2018 - FLAC]",
-                        AuthorId = 5,
-                        BookId = 4,
-                        EventType = EntityHistoryEventType.Grabbed
-                    }
-                });
-        }
-
-        private void GivenDownloadHistoryWithMultipleGrabs()
-        {
-            Mocker.GetMock<IHistoryService>()
-                .Setup(s => s.FindByDownloadId(It.Is<string>(sr => sr == "35238")))
-                .Returns(new List<EntityHistory>
-                {
-                    new EntityHistory
-                    {
-                        DownloadId = "35238",
-                        SourceTitle = "New Author - New Book [2024 - M4B]",
-                        AuthorId = 7,
-                        BookId = 6,
-                        EventType = EntityHistoryEventType.Grabbed,
-                        Date = new System.DateTime(2026, 3, 7, 22, 0, 0, System.DateTimeKind.Utc)
-                    },
-                    new EntityHistory
-                    {
-                        DownloadId = "35238",
-                        SourceTitle = "Old Author - Old Book [2023 - M4B]",
-                        AuthorId = 5,
-                        BookId = 4,
-                        EventType = EntityHistoryEventType.Grabbed,
-                        Date = new System.DateTime(2026, 3, 6, 22, 0, 0, System.DateTimeKind.Utc)
-                    },
-                    new EntityHistory
-                    {
-                        DownloadId = "35238",
-                        SourceTitle = "Old Author - Old Book [2023 - M4B]",
-                        AuthorId = 5,
-                        BookId = 4,
-                        EventType = EntityHistoryEventType.DownloadIgnored,
-                        Date = new System.DateTime(2026, 3, 6, 23, 0, 0, System.DateTimeKind.Utc)
+                         DownloadId = "35238",
+                         SourceTitle = "Audio Author - Audio Book [2018 - FLAC]",
+                         AuthorId = 5,
+                         BookId = 4,
                     }
                 });
         }
@@ -145,35 +83,37 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
         }
 
         [Test]
-        public void should_prefer_grabbed_source_title_when_latest_history_is_import_incomplete()
+        public void should_keep_every_book_from_the_latest_multi_book_grab()
         {
-            GivenDownloadHistoryWithImportIncompleteThenGrabbed();
+            var now = DateTime.UtcNow;
 
-            var remoteBook = new RemoteBook
-            {
-                Author = new Author { Id = 5 },
-                Books = new List<Book> { new Book { Id = 4 } },
-                ParsedBookInfo = new ParsedBookInfo
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.FindByDownloadId("35239"))
+                .Returns(new List<EntityHistory>
                 {
-                    BookTitle = "Audio Book",
-                    AuthorName = "Audio Author"
-                }
-            };
+                    new EntityHistory { DownloadId = "35239", EventType = EntityHistoryEventType.Grabbed, SourceTitle = "Audio Author - Audio Book [2018 - FLAC]", AuthorId = 5, BookId = 6, Date = now },
+                    new EntityHistory { DownloadId = "35239", EventType = EntityHistoryEventType.Grabbed, SourceTitle = "Audio Author - Audio Book [2018 - FLAC]", AuthorId = 5, BookId = 5, Date = now.AddMilliseconds(-3) },
+                    new EntityHistory { DownloadId = "35239", EventType = EntityHistoryEventType.Grabbed, SourceTitle = "Audio Author - Audio Book [2018 - FLAC]", AuthorId = 5, BookId = 4, Date = now.AddMilliseconds(-6) },
+                    new EntityHistory { DownloadId = "35239", EventType = EntityHistoryEventType.Grabbed, SourceTitle = "Audio Author - Old Book [2016 - FLAC]", AuthorId = 5, BookId = 9, Date = now.AddHours(-2) }
+                });
+
+            IEnumerable<int> mappedBookIds = null;
 
             Mocker.GetMock<IParsingService>()
-                  .Setup(s => s.Map(It.Is<ParsedBookInfo>(i => i.BookTitle == "Audio Book" && i.AuthorName == "Audio Author"), It.IsAny<int>(), It.IsAny<IEnumerable<int>>()))
-                  .Returns(remoteBook);
+                  .Setup(s => s.Map(It.IsAny<ParsedBookInfo>(), 5, It.IsAny<IEnumerable<int>>()))
+                  .Callback<ParsedBookInfo, int, IEnumerable<int>>((info, authorId, bookIds) => mappedBookIds = bookIds.ToList())
+                  .Returns(new RemoteBook { Author = new Author { Id = 5 }, Books = new List<Book> { new Book { Id = 4 } } });
 
-            var client = new DownloadClientDefinition
+            var client = new DownloadClientDefinition()
             {
                 Id = 1,
                 Protocol = DownloadProtocol.Torrent
             };
 
-            var item = new DownloadClientItem
+            var item = new DownloadClientItem()
             {
                 Title = "The torrent release folder",
-                DownloadId = "35238",
+                DownloadId = "35239",
                 DownloadClientInfo = new DownloadClientItemClientInfo
                 {
                     Protocol = client.Protocol,
@@ -182,140 +122,9 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
                 }
             };
 
-            var trackedDownload = Subject.TrackDownload(client, item);
+            Subject.TrackDownload(client, item);
 
-            trackedDownload.Should().NotBeNull();
-            trackedDownload.RemoteBook.Should().NotBeNull();
-            trackedDownload.RemoteBook.Author.Should().NotBeNull();
-            trackedDownload.RemoteBook.Author.Id.Should().Be(5);
-            trackedDownload.RemoteBook.Books.First().Id.Should().Be(4);
-        }
-
-        [Test]
-        public void should_reset_ignored_download_when_same_hash_is_grabbed_again()
-        {
-            GivenDownloadHistory();
-
-            var remoteBook = new RemoteBook
-            {
-                Author = new Author { Id = 5 },
-                Books = new List<Book> { new Book { Id = 4 } },
-                ParsedBookInfo = new ParsedBookInfo
-                {
-                    BookTitle = "Audio Book",
-                    AuthorName = "Audio Author"
-                }
-            };
-
-            Mocker.GetMock<IParsingService>()
-                  .Setup(s => s.Map(It.Is<ParsedBookInfo>(i => i.BookTitle == "Audio Book" && i.AuthorName == "Audio Author"), It.IsAny<int>(), It.IsAny<IEnumerable<int>>()))
-                  .Returns(remoteBook);
-
-            var ignoredHistory = new DownloadHistory
-            {
-                DownloadId = "35238",
-                EventType = DownloadHistoryEventType.DownloadIgnored
-            };
-
-            var grabbedHistory = new DownloadHistory
-            {
-                DownloadId = "35238",
-                EventType = DownloadHistoryEventType.DownloadGrabbed
-            };
-
-            var callCount = 0;
-
-            Mocker.GetMock<IDownloadHistoryService>()
-                  .Setup(s => s.GetLatestDownloadHistoryItem("35238"))
-                  .Returns(() =>
-                  {
-                      callCount++;
-                      return callCount == 1 ? ignoredHistory : grabbedHistory;
-                  });
-
-            var client = new DownloadClientDefinition
-            {
-                Id = 1,
-                Protocol = DownloadProtocol.Torrent
-            };
-
-            var item = new DownloadClientItem
-            {
-                Title = "The torrent release folder",
-                DownloadId = "35238",
-                DownloadClientInfo = new DownloadClientItemClientInfo
-                {
-                    Protocol = client.Protocol,
-                    Id = client.Id,
-                    Name = client.Name
-                }
-            };
-
-            var ignoredDownload = Subject.TrackDownload(client, item);
-            ignoredDownload.State.Should().Be(TrackedDownloadState.Ignored);
-
-            var trackedDownload = Subject.TrackDownload(client, item);
-
-            trackedDownload.Should().NotBeNull();
-            trackedDownload.State.Should().Be(TrackedDownloadState.Downloading);
-            trackedDownload.RemoteBook.Should().NotBeNull();
-            trackedDownload.RemoteBook.Author.Id.Should().Be(5);
-            trackedDownload.RemoteBook.Books.First().Id.Should().Be(4);
-        }
-
-        [Test]
-        public void should_only_use_latest_grab_history_when_same_download_is_grabbed_again()
-        {
-            GivenDownloadHistoryWithMultipleGrabs();
-
-            var remoteBook = new RemoteBook
-            {
-                Author = new Author { Id = 7 },
-                Books = new List<Book> { new Book { Id = 6 } },
-                ParsedBookInfo = new ParsedBookInfo
-                {
-                    BookTitle = "New Book",
-                    AuthorName = "New Author"
-                }
-            };
-
-            Mocker.GetMock<IParsingService>()
-                  .Setup(s => s.Map(It.Is<ParsedBookInfo>(i => i.BookTitle == "New Book" && i.AuthorName == "New Author"), 7, It.Is<IEnumerable<int>>(ids => ids.Single() == 6)))
-                  .Returns(remoteBook);
-
-            Mocker.GetMock<IDownloadHistoryService>()
-                  .Setup(s => s.GetLatestDownloadHistoryItem("35238"))
-                  .Returns(new DownloadHistory
-                  {
-                      DownloadId = "35238",
-                      EventType = DownloadHistoryEventType.DownloadGrabbed
-                  });
-
-            var client = new DownloadClientDefinition
-            {
-                Id = 1,
-                Protocol = DownloadProtocol.Torrent
-            };
-
-            var item = new DownloadClientItem
-            {
-                Title = "The torrent release folder",
-                DownloadId = "35238",
-                DownloadClientInfo = new DownloadClientItemClientInfo
-                {
-                    Protocol = client.Protocol,
-                    Id = client.Id,
-                    Name = client.Name
-                }
-            };
-
-            var trackedDownload = Subject.TrackDownload(client, item);
-
-            trackedDownload.Should().NotBeNull();
-            trackedDownload.RemoteBook.Should().NotBeNull();
-            trackedDownload.RemoteBook.Author.Id.Should().Be(7);
-            trackedDownload.RemoteBook.Books.Should().ContainSingle();
-            trackedDownload.RemoteBook.Books.First().Id.Should().Be(6);
+            mappedBookIds.Should().BeEquivalentTo(new[] { 4, 5, 6 });
         }
 
         [Test]
@@ -480,57 +289,6 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
                   .Returns(default(RemoteBook));
 
             Subject.Handle(new AuthorDeletedEvent(remoteEpisode.Author, true, true));
-
-            var trackedDownloads = Subject.GetTrackedDownloads();
-            trackedDownloads.Should().HaveCount(1);
-            trackedDownloads.First().RemoteBook.Should().BeNull();
-        }
-
-        [Test]
-        public void should_clear_cached_remote_book_when_author_deleted_mapping_throws_model_not_found()
-        {
-            GivenDownloadHistory();
-
-            var remoteBook = new RemoteBook
-            {
-                Author = new Author { Id = 5 },
-                Books = new List<Book> { new Book { Id = 4 } },
-                ParsedBookInfo = new ParsedBookInfo
-                {
-                    BookTitle = "Audio Book",
-                    AuthorName = "Audio Author"
-                }
-            };
-
-            Mocker.GetMock<IParsingService>()
-                  .Setup(s => s.Map(It.Is<ParsedBookInfo>(i => i.BookTitle == "Audio Book" && i.AuthorName == "Audio Author"), It.IsAny<int>(), It.IsAny<IEnumerable<int>>()))
-                  .Returns(remoteBook);
-
-            var client = new DownloadClientDefinition
-            {
-                Id = 1,
-                Protocol = DownloadProtocol.Torrent
-            };
-
-            var item = new DownloadClientItem
-            {
-                Title = "Audio Author - Audio Book [2018 - FLAC]",
-                DownloadId = "35238",
-                DownloadClientInfo = new DownloadClientItemClientInfo
-                {
-                    Protocol = client.Protocol,
-                    Id = client.Id,
-                    Name = client.Name
-                }
-            };
-
-            Subject.TrackDownload(client, item);
-
-            Mocker.GetMock<IParsingService>()
-                .Setup(s => s.Map(It.Is<ParsedBookInfo>(i => i.BookTitle == "Audio Book" && i.AuthorName == "Audio Author"), 5, It.Is<IEnumerable<int>>(ids => ids.Single() == 4)))
-                .Throws(new ModelNotFoundException(typeof(Author), 5));
-
-            Assert.DoesNotThrow(() => Subject.Handle(new AuthorDeletedEvent(remoteBook.Author, true, true)));
 
             var trackedDownloads = Subject.GetTrackedDownloads();
             trackedDownloads.Should().HaveCount(1);

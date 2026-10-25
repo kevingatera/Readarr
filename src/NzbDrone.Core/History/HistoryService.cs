@@ -148,6 +148,7 @@ namespace NzbDrone.Core.History
                     DownloadId = message.DownloadId
                 };
 
+                history.Data.Add(EntityHistory.GRAB_ID, message.GrabId);
                 history.Data.Add("Indexer", message.Book.Release.Indexer);
                 history.Data.Add("NzbInfoUrl", message.Book.Release.InfoUrl);
                 history.Data.Add("ReleaseGroup", message.Book.ParsedBookInfo.ReleaseGroup);
@@ -212,7 +213,9 @@ namespace NzbDrone.Core.History
         {
             var downloadId = message.DownloadId;
 
-            if (downloadId.IsNullOrWhiteSpace())
+            // Only a tracked import has verified download provenance. A library scan must not
+            // borrow a grab's download id by matching book and quality.
+            if (message.NewDownload && downloadId.IsNullOrWhiteSpace())
             {
                 downloadId = FindDownloadId(message);
             }

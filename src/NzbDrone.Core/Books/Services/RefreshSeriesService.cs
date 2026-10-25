@@ -67,13 +67,15 @@ namespace NzbDrone.Core.Books
 
         protected override bool ShouldDelete(Series local)
         {
-            // Only consider a series deletable when it has no remaining book links.
-            // When the remote payload omits a series (e.g. a degraded metadata fetch
-            // that failed to list it), this keeps refresh from deleting a series that
-            // still references local books. A truly-empty series is still cleaned up
-            // because DeleteEntity (below) removes orphaned links and the series row
-            // only when no links remain.
+            // A series that is missing from the payload is removed only once no links remain.
+            // The payload can be partial, so its silence is not proof the series is gone.
             return !_linkService.GetLinksBySeries(local.Id).Any();
+        }
+
+        protected override bool CanRemoveChild(SeriesBookLink local)
+        {
+            // Links leave with their book or series. A partial series payload cannot prove a link is obsolete.
+            return false;
         }
 
         protected override void SaveEntity(Series local)

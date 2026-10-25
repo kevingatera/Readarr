@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -22,9 +21,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
 
     public class CandidateService : ICandidateService
     {
-        private static readonly Regex SeriesPartRegex = new Regex(@"\b(?:book|part|pt)\s*(?<number>\d+(?:\.\d+)?|[ivxlcdm]+)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        private static readonly Regex LeadingPartRegex = new Regex(@"^\s*(?:(?:book|part|pt|chapter|disc|cd|track)\s*)?(?<number>\d+(?:\.\d+)?|[ivxlcdm]+)\s*[-._:)]*\s+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        private static readonly Regex RemoveSeriesPartRegex = new Regex(@"\b(?:book|part|pt)\s*(?:\d+(?:\.\d+)?|[ivxlcdm]+)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private const int MaxFallbackSearches = 10;
+
         private static readonly Regex CollapseWhitespaceRegex = new Regex(@"\s{2,}", RegexOptions.Compiled);
 
         private readonly ISearchForNewBook _bookSearchService;
@@ -317,70 +315,78 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                 yield break;
             }
 
-            // Search by author+book
+            // Author and title first, then title alone, then author alone. A search that finds a
+            // candidate ends the fallback, and the whole fallback never sends more than MaxFallbackSearches requests.
+            var searchesLeft = MaxFallbackSearches;
+
             foreach (var authorTag in authorTags.Take(5))
             {
                 foreach (var bookTag in bookTags.Take(5))
                 {
-                    try
+                    if (searchesLeft-- <= 0)
                     {
-                        remoteBooks = _bookSearchService.SearchForNewBook(bookTag, authorTag);
-                    }
-                    catch (GoodreadsException e)
-                    {
-                        _logger.Info(e, "Skipping author/title search due to Goodreads Error");
-                        remoteBooks = new List<Book>();
+                        yield break;
                     }
 
-                    foreach (var candidate in ToCandidates(remoteBooks, seenCandidates, idOverrides))
+                    foreach (var candidate in ToCandidates(SearchSafely(() => _bookSearchService.SearchForNewBook(bookTag, authorTag), "author/title search"), seenCandidates, idOverrides))
                     {
                         yield return candidate;
                     }
+
+                    if (seenCandidates.Any())
+                    {
+                        yield break;
+                    }
                 }
             }
 
-            // If we got an author/book search result, stop
-            if (seenCandidates.Any())
-            {
-                yield break;
-            }
-
-            // Search by just book title
             foreach (var bookTag in bookTags.Take(5))
             {
-                try
+                if (searchesLeft-- <= 0)
                 {
-                    remoteBooks = _bookSearchService.SearchForNewBook(bookTag, null);
-                }
-                catch (GoodreadsException e)
-                {
-                    _logger.Info(e, "Skipping book title search due to Goodreads Error");
-                    remoteBooks = new List<Book>();
+                    yield break;
                 }
 
-                foreach (var candidate in ToCandidates(remoteBooks, seenCandidates, idOverrides))
+                foreach (var candidate in ToCandidates(SearchSafely(() => _bookSearchService.SearchForNewBook(bookTag, null), "book title search"), seenCandidates, idOverrides))
                 {
                     yield return candidate;
+                }
+
+                if (seenCandidates.Any())
+                {
+                    yield break;
                 }
             }
 
-            // Search by just author
-            foreach (var a in authorTags.Take(5))
+            foreach (var authorTag in authorTags.Take(5))
             {
-                try
+                if (searchesLeft-- <= 0)
                 {
-                    remoteBooks = _bookSearchService.SearchForNewBook(a, null);
-                }
-                catch (GoodreadsException e)
-                {
-                    _logger.Info(e, "Skipping author search due to Goodreads Error");
-                    remoteBooks = new List<Book>();
+                    yield break;
                 }
 
-                foreach (var candidate in ToCandidates(remoteBooks, seenCandidates, idOverrides))
+                foreach (var candidate in ToCandidates(SearchSafely(() => _bookSearchService.SearchForNewBook(authorTag, null), "author search"), seenCandidates, idOverrides))
                 {
                     yield return candidate;
                 }
+
+                if (seenCandidates.Any())
+                {
+                    yield break;
+                }
+            }
+        }
+
+        private List<Book> SearchSafely(Func<List<Book>> search, string description)
+        {
+            try
+            {
+                return search();
+            }
+            catch (GoodreadsException e)
+            {
+                _logger.Info(e, "Skipping {0} due to Goodreads Error", description);
+                return new List<Book>();
             }
         }
 
@@ -453,8 +459,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             Add(bookTag.CleanBookTitle());
             Add(bookTag.RemoveBracketsAndContents());
             Add(bookTag.RemoveAfterDash());
-            Add(LeadingPartRegex.Replace(bookTag, string.Empty));
-            Add(RemoveSeriesPartRegex.Replace(bookTag, " "));
+            Add(SeriesPartParser.StripLeadingPart(bookTag));
+            Add(SeriesPartParser.RemoveSeriesPart(bookTag));
 
             if (bookTag.Contains(" - ", StringComparison.Ordinal))
             {
@@ -493,7 +499,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                 return new List<CandidateEdition>();
             }
 
-            var partNumbers = ParsePartNumbers(bookTags);
+            var partNumbers = SeriesPartParser.ParsePartNumbers(bookTags);
             if (!partNumbers.Any())
             {
                 return new List<CandidateEdition>();
@@ -513,107 +519,6 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
             return candidates;
         }
 
-        private static List<double> ParsePartNumbers(IEnumerable<string> bookTags)
-        {
-            var partNumbers = new List<double>();
-
-            foreach (var tag in (bookTags ?? Enumerable.Empty<string>()).Where(x => x.IsNotNullOrWhiteSpace()))
-            {
-                var leadingMatch = LeadingPartRegex.Match(tag);
-                if (leadingMatch.Success && TryParsePartNumber(leadingMatch.Groups["number"].Value, out var leadingPart))
-                {
-                    AddPartIfUnique(partNumbers, leadingPart);
-                }
-
-                foreach (Match match in SeriesPartRegex.Matches(tag))
-                {
-                    if (TryParsePartNumber(match.Groups["number"].Value, out var partNumber))
-                    {
-                        AddPartIfUnique(partNumbers, partNumber);
-                    }
-                }
-            }
-
-            return partNumbers;
-        }
-
-        private static void AddPartIfUnique(List<double> partNumbers, double value)
-        {
-            if (partNumbers.All(x => Math.Abs(x - value) > 0.01))
-            {
-                partNumbers.Add(value);
-            }
-        }
-
-        private static bool TryParsePartNumber(string value, out double partNumber)
-        {
-            partNumber = 0;
-
-            if (value.IsNullOrWhiteSpace())
-            {
-                return false;
-            }
-
-            var cleaned = value.Trim();
-            if (double.TryParse(cleaned, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out partNumber))
-            {
-                return true;
-            }
-
-            var roman = RomanToInt(cleaned);
-            if (roman > 0)
-            {
-                partNumber = roman;
-                return true;
-            }
-
-            return false;
-        }
-
-        private static int RomanToInt(string value)
-        {
-            if (value.IsNullOrWhiteSpace())
-            {
-                return 0;
-            }
-
-            var roman = value.ToUpperInvariant();
-            var total = 0;
-            var lastValue = 0;
-
-            for (var i = roman.Length - 1; i >= 0; i--)
-            {
-                var current = roman[i] switch
-                {
-                    'I' => 1,
-                    'V' => 5,
-                    'X' => 10,
-                    'L' => 50,
-                    'C' => 100,
-                    'D' => 500,
-                    'M' => 1000,
-                    _ => 0
-                };
-
-                if (current == 0)
-                {
-                    return 0;
-                }
-
-                if (current < lastValue)
-                {
-                    total -= current;
-                }
-                else
-                {
-                    total += current;
-                    lastValue = current;
-                }
-            }
-
-            return total;
-        }
-
         private static bool MatchesSeriesPart(Book book, List<double> partNumbers)
         {
             if (book == null || !(book.SeriesLinks?.Value?.Any() ?? false))
@@ -630,7 +535,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Identification
                         return true;
                     }
 
-                    if (TryParsePartNumber(seriesLink.Position, out var seriesPosition) && Math.Abs(seriesPosition - partNumber) < 0.01)
+                    if (SeriesPartParser.TryParseSeriesNumber(seriesLink.Position, out var seriesPosition) && Math.Abs(seriesPosition - partNumber) < 0.01)
                     {
                         return true;
                     }

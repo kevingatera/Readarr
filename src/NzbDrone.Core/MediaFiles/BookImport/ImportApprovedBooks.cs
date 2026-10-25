@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using NLog;
+using NzbDrone.Common;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Instrumentation.Extensions;
@@ -125,26 +126,52 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                     continue;
                 }
 
+                // Every decision in the group must resolve to an edition owned by this book before any
+                // monitored state or files change, including persisted editions that were never swapped.
+                if (decisionList.Any(d => d.Item.Edition == null || d.Item.Edition.BookId != book.Id))
+                {
+                    _logger.Warn("Rejecting import for {0}: an import decision references an edition owned by another book", book);
+                    foreach (var decision in decisionList)
+                    {
+                        decision.Reject(new Rejection("Edition belongs to another book", RejectionType.Permanent));
+                    }
+
+                    continue;
+                }
+
                 // if (replaceExisting)
                 // {
                 //     RemoveExistingTrackFiles(author, book);
                 // }
 
-                // Make sure multi-file audiobooks have unique part numbers for naming and persistence.
-                var audioDecisions = decisionList
-                    .Where(b => MediaFileExtensions.AudioExtensions.Contains(Path.GetExtension(b.Item.Path)))
-                    .ToList();
+                // A source file matched through several decisions is imported once, keeping the best candidate.
+                var audioDecisions = new List<ImportDecision<LocalBook>>();
+                var audioCandidates = decisionList.Where(b => MediaFileExtensions.AudioExtensions.Contains(Path.GetExtension(b.Item.Path)));
 
+                foreach (var sourceGroup in audioCandidates.GroupBy(b => b.Item.Path, PathEqualityComparer.Instance))
+                {
+                    var ranked = sourceGroup
+                        .OrderByDescending(d => d.Item.Quality, new QualityModelComparer(sourceGroup.First().Item.Author.QualityProfile))
+                        .ThenByDescending(d => d.Item.Size)
+                        .ToList();
+
+                    audioDecisions.Add(ranked[0]);
+
+                    foreach (var duplicate in ranked.Skip(1))
+                    {
+                        duplicate.Reject(new Rejection("Duplicate source file in this import", RejectionType.Permanent));
+                    }
+                }
+
+                // Multi-file audiobooks need unique part numbers for naming. Only missing parts are numbered,
+                // after the highest existing part, so parts that are already set keep their identity.
                 if (audioDecisions.Count > 1)
                 {
-                    if (audioDecisions.Select(x => x.Item.Part).Distinct().Count() != audioDecisions.Count ||
-                        audioDecisions.Any(x => x.Item.Part <= 0))
+                    var nextPart = Math.Max(0, audioDecisions.Max(x => x.Item.Part)) + 1;
+
+                    foreach (var d in audioDecisions.Where(x => x.Item.Part <= 0).OrderBy(x => PadNumbers.Replace(x.Item.Path)))
                     {
-                        var part = 1;
-                        foreach (var d in audioDecisions.OrderBy(x => PadNumbers.Replace(x.Item.Path)))
-                        {
-                            d.Item.Part = part++;
-                        }
+                        d.Item.Part = nextPart++;
                     }
 
                     foreach (var d in audioDecisions)
@@ -203,7 +230,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                         DateAdded = DateTime.UtcNow,
                         ReleaseGroup = localTrack.ReleaseGroup,
                         Quality = localTrack.Quality,
-                        MediaInfo = localTrack.FileTrackInfo.MediaInfo,
+                        MediaInfo = localTrack.FileTrackInfo?.MediaInfo,
                         EditionId = localTrack.Edition.Id,
                         Author = localTrack.Author,
                         Edition = localTrack.Edition

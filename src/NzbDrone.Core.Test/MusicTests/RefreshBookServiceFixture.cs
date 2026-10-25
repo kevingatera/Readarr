@@ -1,14 +1,17 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using FluentAssertions;
 using Moq;
 using NUnit.Framework;
 using NzbDrone.Core.Books;
+using NzbDrone.Core.Exceptions;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MetadataSource;
 using NzbDrone.Core.MetadataSource.BookInfo;
 using NzbDrone.Core.Test.Framework;
+using NzbDrone.Test.Common;
 
 namespace NzbDrone.Core.Test.MusicTests
 {
@@ -85,12 +88,18 @@ namespace NzbDrone.Core.Test.MusicTests
                 .Setup(x => x.GetAuthor(localAuthor.Id))
                 .Returns(localAuthor);
 
+            Mocker.GetMock<IBookService>()
+                .Setup(x => x.GetBooksByAuthorMetadataId(localBook.AuthorMetadataId))
+                .Returns(new List<Book>());
+
             Mocker.GetMock<IMediaFileService>()
-                .Setup(x => x.GetFilesByAuthorMetadataId(localAuthor.AuthorMetadataId))
+                .Setup(x => x.GetFilesByAuthorMetadataId(localBook.AuthorMetadataId))
                 .Returns(new List<BookFile>());
 
             var method = typeof(RefreshBookService).GetMethod("GetSkyhookData", BindingFlags.NonPublic | BindingFlags.Instance);
             var result = (Author)method.Invoke(Subject, new object[] { localBook });
+
+            ExceptionVerification.ExpectedWarns(1);
 
             result.Should().NotBeNull();
             result.Should().BeSameAs(localAuthor);
@@ -230,6 +239,95 @@ namespace NzbDrone.Core.Test.MusicTests
             result.Entity.Should().BeNull();
             Mocker.GetMock<IProvideBookInfo>()
                 .Verify(x => x.GetBookInfo(It.IsAny<string>()), Times.Never());
+        }
+
+        // Full refresh path for one local book: the lookup decides, nothing else.
+        [Test]
+        public void should_delete_file_less_book_when_direct_lookup_is_404()
+        {
+            var book = ArrangeLocalBook(fileCount: 0);
+            Mocker.GetMock<IProvideBookInfo>()
+                .Setup(x => x.GetBookInfo(book.ForeignBookId))
+                .Throws(new BookNotFoundException(book.ForeignBookId));
+
+            Subject.RefreshBookInfo(book, new List<Book>(), UnfilteredAuthor(new List<Book>()), false);
+
+            // 404 is logged as an error by the lookup, and the deletion as a warning by design.
+            ExceptionVerification.ExpectedErrors(1);
+            ExceptionVerification.ExpectedWarns(1);
+            Mocker.GetMock<IBookService>().Verify(x => x.DeleteBook(book.Id, false, false), Times.Once());
+        }
+
+        [Test]
+        public void should_keep_book_with_files_when_direct_lookup_is_404()
+        {
+            var book = ArrangeLocalBook(fileCount: 1);
+            Mocker.GetMock<IProvideBookInfo>()
+                .Setup(x => x.GetBookInfo(book.ForeignBookId))
+                .Throws(new BookNotFoundException(book.ForeignBookId));
+
+            Subject.RefreshBookInfo(book, new List<Book>(), UnfilteredAuthor(new List<Book>()), false);
+
+            // Lookup 404 is logged, and the refresh logs that the book was not found but keeps it because it has files.
+            ExceptionVerification.ExpectedErrors(2);
+            Mocker.GetMock<IBookService>().Verify(x => x.DeleteBook(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<bool>()), Times.Never());
+        }
+
+        [Test]
+        public void should_abort_refresh_without_deleting_when_direct_lookup_is_rate_limited()
+        {
+            var book = ArrangeLocalBook(fileCount: 0);
+            Mocker.GetMock<IProvideBookInfo>()
+                .Setup(x => x.GetBookInfo(book.ForeignBookId))
+                .Throws(new BookInfoException("429 from metadata source"));
+
+            Assert.Throws<BookInfoException>(() => Subject.RefreshBookInfo(book, new List<Book>(), UnfilteredAuthor(new List<Book>()), false));
+
+            Mocker.GetMock<IBookService>().Verify(x => x.DeleteBook(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<bool>()), Times.Never());
+        }
+
+        [Test]
+        public void should_delete_profile_filtered_book_without_lookup()
+        {
+            var book = ArrangeLocalBook(fileCount: 0);
+
+            // Listed in the unfiltered payload, so the metadata profile removed it on purpose.
+            Subject.RefreshBookInfo(book, new List<Book>(), UnfilteredAuthor(new List<Book> { new Book { ForeignBookId = book.ForeignBookId } }), false);
+
+            ExceptionVerification.ExpectedWarns(1);
+            Mocker.GetMock<IProvideBookInfo>().Verify(x => x.GetBookInfo(It.IsAny<string>()), Times.Never());
+            Mocker.GetMock<IBookService>().Verify(x => x.DeleteBook(book.Id, false, false), Times.Once());
+        }
+
+        private Book ArrangeLocalBook(int fileCount)
+        {
+            var metadata = new AuthorMetadata { Id = 12, ForeignAuthorId = "7044164", Name = "Scott Meyer" };
+            var author = new Author { Id = 34, AuthorMetadataId = 12, Metadata = metadata };
+            var book = new Book
+            {
+                Id = 56,
+                Title = "An Unwelcome Quest",
+                ForeignBookId = "42792043",
+                AuthorId = 34,
+                AuthorMetadataId = 12,
+                Author = author,
+                AuthorMetadata = metadata
+            };
+
+            Mocker.GetMock<IMediaFileService>()
+                .Setup(x => x.GetFilesByBook(book.Id))
+                .Returns(Enumerable.Range(0, fileCount).Select(_ => new BookFile()).ToList());
+
+            return book;
+        }
+
+        private static Author UnfilteredAuthor(List<Book> books)
+        {
+            return new Author
+            {
+                Metadata = new AuthorMetadata { Id = 12, ForeignAuthorId = "7044164", Name = "Scott Meyer" },
+                Books = books
+            };
         }
     }
 }

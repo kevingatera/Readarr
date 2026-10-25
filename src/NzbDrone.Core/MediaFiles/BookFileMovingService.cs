@@ -1,6 +1,8 @@
 using System;
 using System.IO;
+using System.Linq;
 using NLog;
+using NzbDrone.Common.Crypto;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.EnsureThat;
 using NzbDrone.Core.Books;
@@ -30,6 +32,7 @@ namespace NzbDrone.Core.MediaFiles
         private readonly IDiskProvider _diskProvider;
         private readonly IRootFolderWatchingService _rootFolderWatchingService;
         private readonly IMediaFileAttributeService _mediaFileAttributeService;
+        private readonly IHashProvider _hashProvider;
         private readonly IEventAggregator _eventAggregator;
         private readonly IConfigService _configService;
         private readonly Logger _logger;
@@ -42,6 +45,7 @@ namespace NzbDrone.Core.MediaFiles
                                       IDiskProvider diskProvider,
                                       IRootFolderWatchingService rootFolderWatchingService,
                                       IMediaFileAttributeService mediaFileAttributeService,
+                                      IHashProvider hashProvider,
                                       IEventAggregator eventAggregator,
                                       IConfigService configService,
                                       Logger logger)
@@ -54,6 +58,7 @@ namespace NzbDrone.Core.MediaFiles
             _diskProvider = diskProvider;
             _rootFolderWatchingService = rootFolderWatchingService;
             _mediaFileAttributeService = mediaFileAttributeService;
+            _hashProvider = hashProvider;
             _eventAggregator = eventAggregator;
             _configService = configService;
             _logger = logger;
@@ -121,52 +126,30 @@ namespace NzbDrone.Core.MediaFiles
 
             if (_diskProvider.FileExists(destinationFilePath))
             {
-                var trackedDestination = _mediaFileService.GetFileWithPath(destinationFilePath);
-
-                if (trackedDestination == null)
+                // An existing destination is only adopted when it is provably the same release and no
+                // book file row already owns it. Any other case is a conflict, and the tracked binding stays as it is.
+                if (_mediaFileService.GetFileWithPath(destinationFilePath) != null)
                 {
-                    _logger.Warn("Destination file already exists at {0} without a tracked book file entry, adopting existing file", destinationFilePath);
-
-                    bookFile.Path = destinationFilePath;
-                    _updateBookFileService.ChangeFileDateForFile(bookFile, author, book);
-
-                    try
-                    {
-                        _mediaFileAttributeService.SetFolderLastWriteTime(author.Path, bookFile.DateAdded);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Warn(ex, "Unable to set last write time");
-                    }
-
-                    _mediaFileAttributeService.SetFilePermissions(destinationFilePath);
-
-                    return bookFile;
+                    throw new DestinationAlreadyExistsException($"Destination {destinationFilePath} is already tracked as a book file");
                 }
 
-                _logger.Warn("Destination file already exists at {0} with tracked book file {1}, replacing tracked entry during import", destinationFilePath, trackedDestination.Id);
-
-                _mediaFileService.Delete(trackedDestination, DeleteMediaFileReason.ManualOverride);
-
-                bookFile.Path = destinationFilePath;
-                _updateBookFileService.ChangeFileDateForFile(bookFile, author, book);
-
-                try
+                if (!HasSameContent(bookFilePath, destinationFilePath))
                 {
-                    _mediaFileAttributeService.SetFolderLastWriteTime(author.Path, bookFile.DateAdded);
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warn(ex, "Unable to set last write time");
+                    throw new DestinationAlreadyExistsException($"Destination {destinationFilePath} exists with different content");
                 }
 
-                _mediaFileAttributeService.SetFilePermissions(destinationFilePath);
+                _logger.Info("Destination file {0} already holds identical content without a tracked entry, adopting it", destinationFilePath);
 
-                return bookFile;
+                if (mode == TransferMode.Move)
+                {
+                    _diskProvider.DeleteFile(bookFilePath);
+                }
             }
-
-            _rootFolderWatchingService.ReportFileSystemChangeBeginning(bookFilePath, destinationFilePath);
-            _diskTransferService.TransferFile(bookFilePath, destinationFilePath, mode);
+            else
+            {
+                _rootFolderWatchingService.ReportFileSystemChangeBeginning(bookFilePath, destinationFilePath);
+                _diskTransferService.TransferFile(bookFilePath, destinationFilePath, mode);
+            }
 
             bookFile.Path = destinationFilePath;
 
@@ -184,6 +167,16 @@ namespace NzbDrone.Core.MediaFiles
             _mediaFileAttributeService.SetFilePermissions(destinationFilePath);
 
             return bookFile;
+        }
+
+        private bool HasSameContent(string sourcePath, string destinationPath)
+        {
+            if (_diskProvider.GetFileSize(sourcePath) != _diskProvider.GetFileSize(destinationPath))
+            {
+                return false;
+            }
+
+            return _hashProvider.ComputeMd5(sourcePath).SequenceEqual(_hashProvider.ComputeMd5(destinationPath));
         }
 
         private void EnsureTrackFolder(BookFile bookFile, LocalBook localBook, string filePath)

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FluentAssertions;
-using NLog;
 using NUnit.Framework;
 using NzbDrone.Core.Books;
 
@@ -11,69 +10,6 @@ namespace NzbDrone.Core.Test.MusicTests
     [TestFixture]
     public class EquivalentBookMergeHelperFixture
     {
-        private static readonly Logger Logger = LogManager.GetLogger("EquivalentBookMergeHelperFixture");
-
-        [Test]
-        public void should_collapse_equivalent_remote_books_and_rewrite_series_links()
-        {
-            var audioBook = CreateBook(11, "1", "Ground State", new DateTime(2026, 1, 27), "Audible Audio");
-            var kindleBook = CreateBook(12, "2", "Ground State", new DateTime(2026, 1, 27), "Kindle Edition");
-
-            var author = CreateAuthor(audioBook, kindleBook);
-            var series = new Series { ForeignSeriesId = "series-1", Title = "Expeditionary Force" };
-            series.LinkItems = new List<SeriesBookLink>
-            {
-                new SeriesBookLink
-                {
-                    Series = series,
-                    Book = kindleBook,
-                    Position = "19",
-                    IsPrimary = true
-                }
-            };
-            author.Series = new List<Series> { series };
-
-            var localBooks = new List<Book>
-            {
-                CreateBook(101, "1", "Ground State", new DateTime(2026, 1, 27), "Audible Audio"),
-                CreateBook(102, "2", "Ground State", new DateTime(2026, 1, 27), "Kindle Edition")
-            };
-            var fileCounts = new Dictionary<int, int>
-            {
-                [101] = 1,
-                [102] = 0
-            };
-
-            EquivalentBookMergeHelper.CollapseEquivalentRemoteBooks(author, localBooks, fileCounts, Logger);
-
-            author.Books.Value.Should().HaveCount(1);
-            author.Books.Value[0].ForeignBookId.Should().Be("1");
-            author.Books.Value[0].Editions.Value.Select(x => x.ForeignEditionId).Should().BeEquivalentTo(new[] { "1-edition", "2-edition" });
-            author.Books.Value[0].RelatedBooks.Should().Contain(2);
-            author.Series.Value[0].LinkItems.Value.Should().ContainSingle();
-            author.Series.Value[0].LinkItems.Value[0].Book.Value.ForeignBookId.Should().Be("1");
-            author.Books.Value[0].SeriesLinks.Value.Should().ContainSingle();
-            author.Books.Value[0].SeriesLinks.Value[0].Position.Should().Be("19");
-        }
-
-        [Test]
-        public void should_not_collapse_remote_books_when_series_positions_conflict()
-        {
-            var first = CreateBook(11, "1", "A Storm of Swords", new DateTime(2000, 8, 8), "Audiobook", "5");
-            var second = CreateBook(12, "2", "A Storm of Swords", new DateTime(2000, 8, 8), "Mass Market Paperback", "3");
-            var author = CreateAuthor(first, second);
-            var fileCounts = new Dictionary<int, int> { [101] = 1, [102] = 0 };
-            var localBooks = new List<Book>
-            {
-                CreateBook(101, "1", "A Storm of Swords", new DateTime(2000, 8, 8), "Audiobook", "5"),
-                CreateBook(102, "2", "A Storm of Swords", new DateTime(2000, 8, 8), "Mass Market Paperback", "3")
-            };
-
-            EquivalentBookMergeHelper.CollapseEquivalentRemoteBooks(author, localBooks, fileCounts, Logger);
-
-            author.Books.Value.Should().HaveCount(2);
-        }
-
         [Test]
         public void should_merge_empty_local_duplicate_into_file_backed_match()
         {
@@ -98,7 +34,7 @@ namespace NzbDrone.Core.Test.MusicTests
         }
 
         [Test]
-        public void should_match_equivalent_remote_book_by_related_book_id()
+        public void should_not_match_distinct_related_work_with_same_title_and_date()
         {
             var localBook = CreateBook(102, "2", "Ground State", new DateTime(2026, 1, 27), "Kindle Edition");
             var canonical = CreateBook(101, "1", "Ground State", new DateTime(2026, 1, 27), "Audible Audio");
@@ -106,8 +42,19 @@ namespace NzbDrone.Core.Test.MusicTests
 
             var match = EquivalentBookMergeHelper.FindMatchingRemoteBook(localBook, new List<Book> { canonical });
 
-            match.Should().NotBeNull();
-            match.ForeignBookId.Should().Be("1");
+            match.Should().BeNull();
+        }
+
+        [Test]
+        public void should_not_match_local_work_reached_only_through_related_link()
+        {
+            var localBook = CreateBook(201, "1", "Ground State", new DateTime(2026, 1, 27), "Audible Audio");
+            var remoteBook = CreateBook(202, "2", "Ground State", new DateTime(2026, 1, 27), "Audible Audio");
+            remoteBook.RelatedBooks.Add(1);
+
+            var result = EquivalentBookMergeHelper.FindMatchingLocalBook(new List<Book> { localBook }, remoteBook, new Dictionary<int, int>());
+
+            result.Item1.Should().BeNull();
         }
 
         private static Author CreateAuthor(params Book[] books)
