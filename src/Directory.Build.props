@@ -41,6 +41,17 @@
     <NoWarn>$(NoWarn);CS1591;NU1902</NoWarn>
   </PropertyGroup>
 
+  <!--
+    ImageSharp 3.2.0+ requires a Six Labors license for Release builds. Readarr never calls HistogramEqualization or the TIFF encoder,
+    and ImageResizer registers no TIFF decoder. Remove when moving to a licensed or patched version.
+  -->
+  <ItemGroup>
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-j3p4-wp97-rph4" />
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-j9gm-c75j-xc9q" />
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-jjfr-hcj7-qf5w" />
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-v76p-62qx-wwq2" />
+  </ItemGroup>
+
   <PropertyGroup>
     <Configuration Condition="'$(Configuration)'==''">Release</Configuration>
     <!-- Centralize intermediate and default outputs -->
