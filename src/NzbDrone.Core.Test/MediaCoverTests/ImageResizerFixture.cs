@@ -7,6 +7,7 @@ using NzbDrone.Common.Disk;
 using NzbDrone.Common.EnvironmentInfo;
 using NzbDrone.Core.Test.Framework;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
 
 namespace NzbDrone.Core.Test.MediaCoverTests
 {
@@ -57,6 +58,41 @@ namespace NzbDrone.Core.Test.MediaCoverTests
             File.WriteAllText(mainFile, "Just some junk data that should make it throw an Exception.");
 
             Assert.Throws(Is.InstanceOf<Exception>(), () => Subject.Resize(mainFile, resizedFile, 170));
+
+            File.Exists(resizedFile).Should().BeFalse();
+        }
+
+        [Test]
+        public void should_resize_jpeg_source()
+        {
+            var mainFile = Path.Combine(TempFolder, "cover.jpg");
+            var resizedFile = Path.Combine(TempFolder, "cover-170.jpg");
+
+            using (var image = new Image<Rgba32>(400, 400))
+            {
+                image.SaveAsJpeg(mainFile);
+            }
+
+            Subject.Resize(mainFile, resizedFile, 170);
+
+            using (var image = Image.Load(resizedFile))
+            {
+                image.Height.Should().Be(170);
+            }
+        }
+
+        [Test]
+        public void should_reject_tiff_source()
+        {
+            var mainFile = Path.Combine(TempFolder, "cover.tiff");
+            var resizedFile = Path.Combine(TempFolder, "cover-170.jpg");
+
+            using (var image = new Image<Rgba32>(16, 16))
+            {
+                image.SaveAsTiff(mainFile);
+            }
+
+            Assert.Throws<UnknownImageFormatException>(() => Subject.Resize(mainFile, resizedFile, 170));
 
             File.Exists(resizedFile).Should().BeFalse();
         }
