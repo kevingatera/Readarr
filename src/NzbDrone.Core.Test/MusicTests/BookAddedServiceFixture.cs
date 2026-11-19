@@ -78,5 +78,42 @@ namespace NzbDrone.Core.Test.BookTests
             Mocker.GetMock<IManageCommandQueue>()
                 .Verify(x => x.Push(It.Is<BookSearchCommand>(c => c.BookIds.SequenceEqual(new List<int> { 11 })), It.IsAny<CommandPriority>(), It.IsAny<CommandTrigger>()), Times.Once());
         }
+
+        [TestCase(-13, true)]
+        [TestCase(-16, false)]
+        [TestCase(0.5, true)]
+        [TestCase(3, false)]
+        public void should_respect_recent_release_window(double days, bool searched)
+        {
+            RefreshAndScan(GivenBook(10, DateTime.UtcNow.AddDays(days)));
+
+            Mocker.GetMock<IManageCommandQueue>()
+                .Verify(x => x.Push(It.IsAny<BookSearchCommand>(), It.IsAny<CommandPriority>(), It.IsAny<CommandTrigger>()), searched ? Times.Once() : Times.Never());
+        }
+
+        [Test]
+        public void should_not_search_undated_book_found_by_refresh()
+        {
+            RefreshAndScan(GivenBook(10, null));
+
+            Mocker.GetMock<IManageCommandQueue>()
+                .Verify(x => x.Push(It.IsAny<BookSearchCommand>(), It.IsAny<CommandPriority>(), It.IsAny<CommandTrigger>()), Times.Never());
+        }
+
+        [Test]
+        public void should_still_search_old_book_explicitly_flagged_for_search()
+        {
+            var book = GivenBook(10, new DateTime(1957, 4, 1));
+            book.AddOptions.SearchForNewBook = true;
+
+            Mocker.GetMock<IBookService>()
+                .Setup(x => x.GetBooksByAuthor(_author.Id))
+                .Returns(new List<Book> { book });
+
+            Subject.SearchForRecentlyAdded(_author.Id);
+
+            Mocker.GetMock<IManageCommandQueue>()
+                .Verify(x => x.Push(It.Is<BookSearchCommand>(c => c.BookIds.SequenceEqual(new List<int> { 10 })), It.IsAny<CommandPriority>(), It.IsAny<CommandTrigger>()), Times.Once());
+        }
     }
 }
