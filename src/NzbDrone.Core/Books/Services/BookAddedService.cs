@@ -23,6 +23,9 @@ namespace NzbDrone.Core.Books
         private readonly Logger _logger;
         private readonly ICached<List<int>> _addedBooksCache;
 
+        // Newly added books released before this window are not searched automatically.
+        public static readonly TimeSpan RecentReleaseWindow = TimeSpan.FromDays(14);
+
         public BookAddedService(ICacheManager cacheManager,
                                    IManageCommandQueue commandQueueManager,
                                    IBookService bookService,
@@ -82,16 +85,26 @@ namespace NzbDrone.Core.Books
                     return;
                 }
 
-                var previouslyReleased = message.Added.Where(a => a.ReleaseDate.HasValue && a.ReleaseDate.Value.Before(DateTime.UtcNow.AddDays(1)) && a.Monitored).ToList();
+                // A refresh also "adds" back-catalogue books the metadata source only just
+                // returned (series backfill, ID churn). Only search books released recently,
+                // like Sonarr does; older ones stay wanted for RSS or a manual search.
+                var previouslyReleased = message.Added.Where(a => a.Monitored && IsRecentRelease(a)).ToList();
 
                 if (previouslyReleased.Empty())
                 {
-                    _logger.Debug("Newly added books all release in the future");
+                    _logger.Debug("No newly added books were released recently, skipping search");
                     return;
                 }
 
                 _addedBooksCache.Set(message.Author.Id.ToString(), previouslyReleased.Select(e => e.Id).ToList());
             }
+        }
+
+        private static bool IsRecentRelease(Book book)
+        {
+            return book.ReleaseDate.HasValue &&
+                   book.ReleaseDate.Value.After(DateTime.UtcNow - RecentReleaseWindow) &&
+                   book.ReleaseDate.Value.Before(DateTime.UtcNow.AddDays(1));
         }
     }
 }
